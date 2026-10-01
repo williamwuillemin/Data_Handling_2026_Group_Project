@@ -25,7 +25,7 @@ Detailed requirements will be added here once the brief is published (22 Oct).
 | Noé von Muralt | @... | noe.vonmuralt@student.unisg.ch |
 | Elias Batteau | @... | elias.batteau@student.unisg.ch |
 | Stanislav Collet | @... | stanislav.collet@student.unisg.ch |
-| ... (name to add) | @... | Ojlewis290204@gmail.com |
+| Oliver Lewis | @... | Ojlewis290204@gmail.com |
 
 ## How we work (rules)
 
