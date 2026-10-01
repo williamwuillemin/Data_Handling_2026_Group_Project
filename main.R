@@ -1,3 +1,7 @@
-# Data Handling - Group Project (HSG, Fall 2026)
+# Data Handling Group Project (HSG, Fall 2026)
+
 # main.R: main script of the project
 
+# authors: Batteau Elias, Collet Stanislav, Lewis Oliver, Von Muralt Noé & Wuillemin William 
+
+# start of the Code :
