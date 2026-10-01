@@ -25,10 +25,14 @@ Detailed requirements will be added here once the brief is published (22 Oct).
 | ... | @... |
 
 ## How we work (rules)
-- **Never push directly to `main`**: it is protected.
+
+> [!WARNING]
+> **`main` is NOT protected yet.** GitHub technically lets anyone push directly to `main`, with no review.
+> A direct push can **overwrite or break teammates' work**, cause merge conflicts, or put untested code into the version we submit.
+> Until protection is switched on, these rules rely on **everyone respecting them**.
+
+- **Do not push directly to `main`.**
 - Create your own branch: `git checkout -b yourname/topic`
 - Push it and open a **Pull Request**; at least **1 teammate must approve** before merging.
 - Always `git pull` on `main` before starting new work.
 - Don't commit large raw data files or passwords/API keys (see `.gitignore`).
-# Data_Handling_2026_Group_Project
-Group project for Data Handling: Import, Cleaning and Visualisation (BEcon 3230, HSG, Fall 2026). Real-world data pipeline in R. Final submission: 16 Dec 2026, 23:59.
