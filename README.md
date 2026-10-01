@@ -21,8 +21,11 @@ Detailed requirements will be added here once the brief is published (22 Oct).
 ## Team
 | Name | GitHub | Email (GitHub account) |
 |---|---|---|
-| William | @williamwuillemin | william.wuillemin04@gmail.com |
-| ... | @... | ... |
+| William Wuillemin | @williamwuillemin | william.wuillemin04@gmail.com |
+| Noé von Muralt | @... | noe.vonmuralt@student.unisg.ch |
+| Elias Batteau | @... | elias.batteau@student.unisg.ch |
+| Stanislav Collet | @... | stanislav.collet@student.unisg.ch |
+| Oliver Lewis | @... | Ojlewis290204@gmail.com |
 
 ## How we work (rules)
 
