@@ -1,0 +1,43 @@
+# ---- R / RStudio ----
+.Rhistory
+.Rapp.history
+.RData
+.RDataTmp
+.Ruserdata
+.Rproj.user/
+*.Rproj.user
+.Renviron
+*-Ex.R
+/*.tar.gz
+/*.Rcheck/
+rsconnect/
+
+# ---- Knitted / rendered output (Quarto, R Markdown) ----
+*_cache/
+*_files/
+/cache/
+.quarto/
+*.utf8.md
+*.knit.md
+
+# ---- Data: keep raw / large files out of git ----
+# (share big datasets via OneDrive/Canvas instead; small cleaned files can be force-added: git add -f)
+data/raw/
+*.rds
+*.RData
+*.zip
+*.parquet
+
+# ---- Secrets: NEVER commit API keys or passwords ----
+.env
+*.key
+secrets*
+credentials*
+
+# ---- OS / editor clutter ----
+.DS_Store
+Thumbs.db
+desktop.ini
+~$*
+.vscode/
+.idea/
