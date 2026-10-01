@@ -19,10 +19,10 @@ The exam tests our understanding of the project, so **every member should unders
 Detailed requirements will be added here once the brief is published (22 Oct).
 
 ## Team
-| Name | GitHub |
-|---|---|
-| William | @williamwuillemin |
-| ... | @... |
+| Name | GitHub | Email (GitHub account) |
+|---|---|---|
+| William | @williamwuillemin | william.wuillemin04@gmail.com |
+| ... | @... | ... |
 
 ## How we work (rules)
 
