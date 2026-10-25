@@ -1,3 +1,1 @@
 gdhdhrnznrzt
-
-a <- "hello noé" 
