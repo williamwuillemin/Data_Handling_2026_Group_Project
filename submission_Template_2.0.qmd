@@ -1,0 +1,283 @@
+---
+title: "Data Handling: Group Project 2026"
+subtitle: "Women at work"
+author:
+  - name: Batteau, Elias
+  - name: Collet, Stanislav
+  - name: Lewis, Oliver
+  - name: Von Muralt, Noé
+  - name: Wuillemin, William
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+highlight-style: dracula
+---
+
+```{r setup, echo=FALSE, eval=TRUE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, echo = TRUE, eval = TRUE)
+```
+
+# R Setup
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(Rilostat) # ILO data (Part 1 and test in Part 2)
+library(WDI)      # World Bank data (Part 1 and test in Part 2)
+library(httr2)    # own API wrappers (Part 2)
+
+# Working directory (not needed when the project is opened via the .Rproj file)
+# setwd("C:/GitHub/Data_Handling_2026_Group_Project")
+
+```
+
+
+# Part 1: Importing data with R packages
+
+## 1.1 - Female labour force participation (ILO)
+
+### 1.1.1 - Explain which indicator you've chosen, and describe it briefly in words.
+
+The ILOSTAT table of contents lists every series whose name contains "Labour force participation". The same rate is published in many versions, broken down by different characteristics. We narrow them down step by step.
+
+```{r}
+# Download the ILOSTAT table of contents for "Labour force participation"
+toc <- get_ilostat_toc(search = "Labour force participation", quiet = TRUE)
+
+# Number of matching series
+nrow(toc)
+names(toc)
+
+# Identification of the different dataset
+toc%>%as.data.frame()%>%select(id, freq, data.start, data.end, n.ref_area)%>%arrange(data.start)%>%print()
+```
+
+Our research question is about long-run structural change, so we need annual data. Monthly or quarterly data would add seasonality we do not need.
+
+```{r}
+# Keep only annual series ("A" = annual)
+annual <- toc %>%filter(freq == "A")
+
+# Number of candidates remaining
+nrow(annual)
+
+```
+
+`r nrow(toc) - nrow(annual)` of the `r nrow(toc)` matching series are not annual and are dropped.
+
+To keep women aged 45 to 54, the series must be split by both sex and age. Series split by sex and another characteristic (education, rural/urban area, marital status) but not by age only give one rate for all ages together, so they cannot be used.
+
+```{r}
+# Keep series with sex and age, oldest start year first
+candidate <- annual %>%
+  filter(startsWith(id, "EAP_DWAP_SEX_AGE")) %>%
+  select(id, indicator.label, data.start, data.end, n.ref_area, n.records) %>%
+  arrange(data.start)
+
+
+# Clean table with the dates
+candidate %>%select(id, data.start, data.end, n.ref_area) %>%   
+  knitr::kable(col.names = c("Series", "First year", "Last year", "Countries and regions"))
+```
+
+```{r}
+# Which candidate covers the most countries and regions? (desc() = largest first)
+candidate %>%
+  select(id, n.ref_area) %>%
+  arrange(desc(n.ref_area))
+```
+
+We decided to choose the indicator EAP_DWAP_SEX_AGE_RT_A, "Labour force participation rate by sex and age (%)", in annual data.seven annual series give the labour force participation rate with both sex and age as variable. However, only EAP_DWAP_SEX_AGE_RT_A ("Labour force participation rate by sex and age (%)") starts in 1946, which makes it the only series covering the whole period, from 1950 to 2025, that our research question needs.
+
+Our indicators measures the share of the working-age population in a given sex and age group that is economically active (employed or looking for work). We are then able to select the share of women between 45 and 54 who are economically active.
+
+We have chosen this indicator because:
+
+- It has the longest time series and the most countries.
+- It can be filtered for women in the right age bracket.
+- The annual frequency best matches the research question (a long-run structural pattern: how female participation changes as countries develop). The extra detail of monthly or quarterly data would not be particularly relevant, and we do not need to deal with seasonality. For our research question, we need a sample that includes countries at different income levels.
+- For the rest of the project, it allows us to merge it with GDP, which is also annual.
+
+### 1.1.2 - Import the full series, i.e. all years available from 1950 to 2025.
+
+Since we only need women aged 45 to 54, we use the filters so that the ILO server sends only the rows we need instead of the full dataset.
+
+To filter by age, we need the exact code ILOSTAT uses for the 45 to 54 age group. We first check which age codes exist, using a small download (in our case Swiss women only) as an example.
+
+```{r}
+# Small test download: Switzerland, women only
+test <- get_ilostat(
+  id      = "EAP_DWAP_SEX_AGE_RT_A",   # our chosen dataset
+  segment = "indicator",               # the dataset is organised by indicator
+  filters = list(
+    ref_area = "CHE",                  # only Switzerland, to keep it small
+    sex      = "SEX_F"                 # only women
+  ),
+  quiet   = TRUE
+)
+
+# Show only the 10-year age bands
+test %>% distinct(classif1) %>% filter(startsWith(classif1, "AGE_10YRBANDS"))
+```
+
+The ILO publishes the same data in several age-groups. The 10-year bands include the group we need, with the code `AGE_10YRBANDS_Y45-54`.
+
+We can now download the full series for all countries, keeping only women aged 45 to 54 and the years 1950 to 2025.
+
+```{r}
+# Download the full series: all countries, women aged 45-54, 1950-2025
+flfp_raw <- get_ilostat(
+  id          = "EAP_DWAP_SEX_AGE_RT_A",
+  segment     = "indicator",
+  time_format = "num",                    # years as numbers, not text
+  filters     = list(
+    sex      = "SEX_F",                   # women
+    classif1 = "AGE_10YRBANDS_Y45-54",    # age group 45-54 (code checked above)
+    timefrom = 1950,                      # first year
+    timeto   = 2025                       # last year
+  ),
+  quiet = TRUE
+)
+
+# Checks
+distinct(flfp_raw, sex, classif1)   # should be one row: SEX_F, AGE_10YRBANDS_Y45-54
+range(flfp_raw$time)                # first and last year
+n_distinct(flfp_raw$ref_area)       # number of countries and regions
+```
+
+The filters worked: the data only contain women aged 45 to 54. The series covers `r min(flfp_raw$time)` to `r max(flfp_raw$time)` for `r n_distinct(flfp_raw$ref_area)` countries. Please note that We keep the raw data here and that the cleaning (selecting variables, handling missing values, removing regional aggregates) is done in Part 3.
+
+## 1.2 - GDP per capita (World Bank)
+
+### 1.2.1 - Explain which indicator you've chosen, and describe it briefly in words.
+
+The instruction mentioned two R packages that give access to the World Bank data API. Those are WDI and wbstats. In this project we are going to use the [WDI package](https://cran.r-project.org/web/packages/WDI/index.html). We choose the WDI package because it is the one that the instruction mentiones in part 2 of the assignment but wbstats queries the same API and would give the same data.
+
+We search for the indicators whose name contains "GDP per capita".
+
+```{r}
+# Search the World Bank indicators by name
+search_wdi <- WDIsearch(string = "GDP per capita", field = "name") %>%  as.data.frame()
+```
+
+We filter for criteria (1) and (2), which can be read from the indicator name. The same currency makes countries comparable, and the inflation adjustment makes years comparable:
+
+- Same currency: "US\$" or "international \$" (not "LCU" = local currency unit)
+- Inflation-adjusted: "constant" prices, i.e. GDP measured every year at the prices of one base year (not "current" prices)
+
+```{r}
+# Flag the indicators that meet criteria (1) and (2)
+candidates_W <- search_wdi %>%
+  mutate(
+    same_currency = grepl("US\\$|international \\$", name),
+    inflation_adj = grepl("constant", name, ignore.case = TRUE)
+  )
+
+candidates_W %>% select(indicator, name, same_currency, inflation_adj)
+```
+
+Finally, we filter for criterion (3): we download the remaining candidates and compare their coverage, i.e. how far back each one goes and how many countries it covers.
+
+```{r}
+# Criteria (1) and (2): keep indicators with TRUE in both columns
+finalists <- candidates_W %>%
+  filter(same_currency, inflation_adj) %>%
+  filter(indicator != "NY.GDP.PCAP.PP.KD.87")   # archived: no longer served by the API
+
+df_finalists <- WDI(
+  country   = "all",
+  indicator = finalists$indicator,
+  # start = 1960 could be added; however, World Bank data always start in 1960
+  end       = 2025,
+  extra     = TRUE   # adds "region", used to drop aggregates like "World"
+)
+
+# Criterion (3): compare how far back and how widely each finalist is covered
+coverage <- df_finalists %>%
+  filter(region != "Aggregates") %>%   # keep countries only
+  pivot_longer(
+    cols      = any_of(finalists$indicator),
+    names_to  = "indicator",
+    values_to = "value"
+  ) %>%
+  filter(!is.na(value)) %>%
+  group_by(indicator) %>%
+  summarise(
+    first_year  = min(year),           # earliest year with data
+    last_year   = max(year),           # latest year with data
+    n_countries = n_distinct(iso3c),   # number of countries
+    n_obs       = n()                  # number of country-year values
+  ) %>%
+  arrange(first_year)
+
+coverage
+
+# Store the two finalists' coverage (used in the text below)
+kd  <- coverage %>% filter(indicator == "NY.GDP.PCAP.KD")
+ppp <- coverage %>% filter(indicator == "NY.GDP.PCAP.PP.KD")
+```
+
+One finalist, NY.GDP.PCAP.PP.KD.87, is excluded: querying the World Bank API directly returns the message that the indicator was not found and may have been deleted or archived.
+
+To conclude, we keep NY.GDP.PCAP.KD: it starts in `r kd$first_year` and covers `r kd$n_countries` countries, while NY.GDP.PCAP.PP.KD (in PPP, international \$) starts only in `r ppp$first_year` and covers `r ppp$n_countries` countries.
+
+It measures the value of all final goods and services produced in a country in a year, divided by its population, in constant 2015 US dollars (adjusted for inflation, so that years can be compared).
+
+### 1.2.2 - Import the full series, i.e. all years available up to 2025. What is the oldest date available?
+
+Now that we have selected the indicator, we import the entire series from the earliest possible date.
+
+```{r}
+# Import GDP per capita (constant 2015 US$) for all countries, all years up to 2025
+df_wb <- WDI(
+  country   = "all",
+  indicator = c(gdp_pc = "NY.GDP.PCAP.KD"),
+  # start     = 1960 : the first date that is available
+  end       = 2025,
+  extra     = TRUE   # adds "region", used in Part 3 to drop aggregates like "World"
+)
+
+head(df_wb)
+```
+
+```{r}
+# Oldest year with data
+min(df_wb$year[!is.na(df_wb$gdp_pc)])
+```
+
+The oldest date available is `r min(df_wb$year[!is.na(df_wb$gdp_pc)])`.
+
+## 1.3 - Check and store the data
+
+### 1.3.1 - Check the number of rows of your two data frames. How many are they? Print the number of rows as an answer.
+
+```{r}
+# Number of rows of each data frame
+cat("ILO data (flfp_raw):", nrow(flfp_raw), "rows\n")
+cat("World Bank data (df_wb):", nrow(df_wb), "rows\n")
+```
+
+The ILO data frame has `r nrow(flfp_raw)` rows and the World Bank data frame has `r nrow(df_wb)` rows.
+
+### 1.3.2 - Print the first 5 rows of each data frame.
+
+```{r}
+# First 5 rows of each data frame
+head(flfp_raw, 5)
+head(df_wb, 5)
+```
+
+### 1.3.3 - Store your data locally using saveRDS (the R format for R objects). This will make your next steps faster, as you don't have to load data from the API every time.
+
+```{r}
+# Create a "data" folder (if it does not exist yet)
+dir.create("data", showWarnings = FALSE)
+
+# Save both data frames in R's native format
+saveRDS(flfp_raw, "data/df_ilostat_womenparticipation.RDS")
+saveRDS(df_wb,    "data/df_WorldBank_gdp_capita.RDS")
+```
