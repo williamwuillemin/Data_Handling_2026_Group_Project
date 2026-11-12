@@ -1,0 +1,321 @@
+---
+title: "part3_1_3_2_oliver"
+subtitle: "Women at work: Part 3.1 and 3.2 (Oliver)"
+author:
+  - name: Batteau, Elias
+  - name: Collet, Stanislav
+  - name: Lewis, Oliver
+  - name: Von Muralt, Noé
+  - name: Wuillemin, William
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+highlight-style: dracula
+---
+
+
+```{r setup, echo=FALSE, eval=TRUE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, echo = TRUE, eval = TRUE)
+```
+
+# R Setup
+
+```{r}
+# Load necessary libraries (same as in the group template)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(Rilostat) # ILO data (only used if the saved file is missing)
+library(WDI)      # World Bank data (only used if the saved file is missing)
+
+
+# Optional packages for the first exploration (install once in the console if missing)
+# install.packages(c("skimr", "summarytools", "writexl"))
+library(skimr)
+library(writexl)  # Used to make an Excel file of our data
+```
+
+```{r}
+# Make sure the "data" folder exists
+dir.create("data", showWarnings = FALSE)
+
+# File names are the same as in Part 1 of the group template
+path_ilo <- "data/df_ilostat_womenparticipation.RDS"
+path_wb  <- "data/df_WorldBank_gdp_capita.RDS"
+
+# ILO data: download and save only if the file does not exist yet
+if (!file.exists(path_ilo)) {
+  flfp_raw <- get_ilostat(
+    id          = "EAP_DWAP_SEX_AGE_RT_A",
+    segment     = "indicator",
+    time_format = "num",
+    filters     = list(
+      sex      = "SEX_F",
+      classif1 = "AGE_10YRBANDS_Y45-54",
+      timefrom = 1950,
+      timeto   = 2025
+    ),
+    quiet = TRUE
+  )
+  saveRDS(flfp_raw, path_ilo)
+}
+
+# World Bank data: download and save only if the file does not exist yet
+if (!file.exists(path_wb)) {
+  df_wb_download <- WDI(
+    country   = "all",
+    indicator = c(gdp_pc = "NY.GDP.PCAP.KD"),
+    end       = 2025,
+    extra     = TRUE
+  )
+  saveRDS(df_wb_download, path_wb)
+}
+
+# Import the saved data (as in the group template for Part 3)
+df_ilo <- readRDS(path_ilo)
+df_wb  <- readRDS(path_wb)
+```
+---
+
+# Part 3: Cleaning, merging and analysing the data
+
+## 3.1 - First data exploration
+
+### 3.1.1 - Comment on the structure of your data frames and describe the types of variables they contain.
+
+In order to comment on the structure of the data frame, we must first get a summary of the data in question. We use the `glimpse` function:
+
+```{r}
+glimpse(df_ilo)
+glimpse(df_wb)
+```
+
+Both data frames have one row per country and year. `df_ilo` has 3,985 rows from 1950 to 2025, and `df_wb` has 17,556 rows from 1960 to 2025.
+
+Each has two numeric columns, and the rest are character (9 in `df_ilo`, 11 in `df_wb`). In `df_ilo`, the numeric columns are `time` (the year) and `obs_value`, both stored as doubles, and `obs_value` is the participation rate of women aged 45 to 54 in percent. In `df_wb`, they are `year` (the year) and `gdp_pc`, and `gdp_pc` is GDP per capita in constant 2015 US dollars.
+
+
+### 3.1.2 - Load the datasets. Briefly describe the content of each dataset according to the five key aspects described above. For aspect 3 (quality), perform two smell tests per dataset.
+
+### df_ilo
+1. **Definitions**. `obs_value` is the labour force participation rate, the share of women aged 45 to 54 who are either employed or looking for work. `ref_area` is the country code and `time` is the year.
+
+2. **Units**. obs_value is in percent, and time is in calendar years.
+
+3. **Quality**. We chose these two tests because they check what matters most for the later analysis. Duplicate country-years would be counted twice after the merge, and a participation rate is a percentage, so missing or out-of-range values would point to errors in the data.
+```{r}
+# Smell test 1: duplicate country-year rows
+df_ilo %>%
+  count(ref_area, time) %>%
+  filter(n > 1)
+
+# Smell test 2: missing values and range of the rate
+sum(is.na(df_ilo$obs_value))
+range(df_ilo$obs_value)
+```
+No country-year appears more than once, so there are no duplicates. There are also no missing values, and the values run from 2.061 to 100, which is plausible for a percentage. A maximum of exactly 100 is surprising for women aged 45 to 54, so we look at it in section 3.2.
+
+4. **Unit of observation**. Each row is one country or area in one year. There are 225 codes, and since there are fewer than 200 UN recognised countries, we will investigate this further in section 3.2.
+
+5. **Time structure**. It is an unbalanced panel from 1950 to 2025. Coverage is uneven, with far more observations in recent years than in early decades.
+
+
+
+### df_wb
+**1. Definitions.** `gdp_pc` is GDP per capita, the value of all final goods and services produced in a country in a year divided by its population. It is adjusted for inflation. `iso3c` is the 3-letter country code and `year` is the year. `income` is the World Bank income group classification of a country.
+
+**2. Units.** `gdp_pc` is in constant 2015 US dollars, and `year` is in calendar years.
+
+**3. Quality.** We chose these two smell tests because they check what matters most for the merge. Groups of countries are not countries and would be counted as extra observations, and rows without a country code cannot be matched to the ILO data.
+```{r}
+# Smell test 1: using regions, we check for areas that are groups, not countries
+df_wb %>%
+  distinct(country, region) %>%
+  filter(is.na(region) | region == "Aggregates") %>%
+  nrow()
+
+# Smell test 2: empty country codes
+sum(df_wb$iso3c == "")
+```
+49 of the 266 areas are aggregates or groups, such as "World" or "High income", and not countries. `iso3c` is also empty for 330 rows (5 areas), so these rows cannot be matched to the ILO codes.
+
+**4. Unit of observation.** Each row is one area in one year. Of the 266 areas, 217 are countries or territories, and 49 are groups of countries.
+
+**5. Time structure.** It is a panel from 1960 to 2025. Every area has a row for every year (266 × 66 = 17,556 rows), so any missing values appear as `NA`, not as absent rows.
+
+
+
+## 3.2 - Data Cleaning
+
+Let's first clean the `df_ilo` data frame.
+
+`ref_area` identifies the countries, so we keep it. However, there are 225 codes and fewer than 200 UN recognised countries, so we investigate the extra codes. The code list was exported once in the console and checked against the UN member states.
+
+```{r}
+#| eval: false 
+# Change to eval TRUE and install writexl (line 39) if you want to run this code and override the old ref_area_list file
+write_xlsx(distinct(df_ilo, ref_area), "ref_area_list.xlsx")
+```
+
+36 codes are not UN member states: 1 no longer exists (ANT), 3 are disputed or partly recognised (KOS, TWN, PSE) and the rest are territories of other countries. We only delete ANT, the one code of a country that no longer exists. The other codes are separate areas with their own data, and dropping them would remove observations without a clear reason. We keep in mind that they are not all sovereign countries when we interpret the results.
+
+```{r}
+df_ilo_clean <- df_ilo %>%
+  filter(ref_area != "ANT")
+```
+
+`source` could explain duplicate country-year rows, but as seen in the smell test from 3.1, there are no duplicates. The column is therefore not needed.
+
+```{r}
+df_ilo_clean <- df_ilo_clean %>%
+  select(-source)
+```
+
+We must then look at the `indicator`, `sex` and `classif1` categories to see whether they represent only one value (for `sex` it must be female and for `classif1` it must be women between the age of 45 and 54).
+
+```{r}
+distinct(df_ilo, indicator)
+distinct(df_ilo, sex)
+distinct(df_ilo, classif1)
+```
+
+Each has one value: women, aged 45 to 54. Therefore, these columns are no longer needed.
+
+```{r}
+df_ilo_clean <- df_ilo_clean %>%
+  select(-indicator, -sex, -classif1)
+```
+
+We now take a look at the metadata columns `obs_status`, `note_classif`, `note_indicator` and `note_source`. These are codes we cannot interpret and are not needed for the analysis, and three of them are almost entirely empty. Hence we can delete them too.
+
+```{r}
+df_ilo_clean <- df_ilo_clean %>%
+  select(-obs_status, -note_classif, -note_indicator, -note_source)
+```
+
+We check that the columns were deleted accurately and comment on `time` and `obs_value`.
+
+```{r}
+skim(df_ilo_clean)
+```
+
+We can see that `n_missing` is zero for both columns, which indicates there are no NA values (as already seen for `obs_value` in 3.1). `time` is numeric (years) with a minimum of 1950 and a maximum of 2025. The mean of `time` is nearer to 2025 than 1950 because there are more datapoints, and hence more rows with a value, the closer we get to today.
+
+```{r}
+summary(df_ilo_clean$obs_value)
+```
+
+`obs_value` is the participation rate in percent. The summary shows a minimum of 2.061, a median of 66.361, a mean of 62.636 and a maximum of 100. All values lie between 0 and 100, which is plausible for a percentage (see 3.1). The mean is below the median, so some countries with very low participation pull the average down. A maximum of exactly 100 is surprising for women aged 45 to 54, so we check it below.
+
+```{r}
+df_ilo_clean %>%
+  filter(obs_value == 100) %>%
+  print(n = Inf)
+```
+As MSR is a small country, this result, although improbable, is plausible, and therefore we will keep it in our data.
+
+In summary, we keep only `ref_area`, `time` and `obs_value`. `ref_area` (country code) and `time` (year) identify each observation and will be used to merge with the World Bank data, and `obs_value` (participation rate in %) is our variable of interest.
+
+
+
+
+
+
+Let's now clean the `df_wb` data frame.
+
+`country` identifies the areas, so we keep it. There are 266 of them, so we must make sure we only keep countries and no groups. As seen in 3.1, 49 of the 266 areas are aggregates or groups (such as "World" or "High income") and not countries. We use the `region` column to remove them, as they either have the region "Aggregates" or no region at all.
+
+```{r}
+df_wb_clean <- df_wb %>%
+  filter(!is.na(region), region != "Aggregates")
+
+count(df_wb_clean, region)
+```
+
+The count shows that no aggregates or missing regions remain. As seen in 3.1, `iso3c` is also empty for some rows. These cannot be matched to the ILO data, so we remove any that are left.
+
+```{r}
+df_wb_clean <- df_wb_clean %>%
+  filter(iso3c != "")
+```
+
+We keep `iso3c` and delete `iso2c`, because `iso3c` is the 3-letter code that is also used in `df_ilo`. `status` is empty in every row, and `lastupdated` is the date the website was last updated, which is irrelevant to our analysis. We have now used `region` to clean the list of countries, so we have no further use for it. `capital`, `longitude`, `latitude` and `lending` are not relevant to our analysis either. We keep `income`, as it is needed for Section 3.4.
+
+```{r}
+df_wb_clean <- df_wb_clean %>%
+  select(-iso2c, -status, -lastupdated, -region,
+         -capital, -longitude, -latitude, -lending)
+
+skim(df_wb_clean) # Used to see if the columns were properly deleted
+```
+
+We check that the cleaned data is complete and as expected, because missing country codes cannot be merged, and the number of areas, the years and the income groups should match what we kept.
+
+```{r}
+# Empty or missing country codes
+sum(df_wb_clean$iso3c == "")
+sum(is.na(df_wb_clean$iso3c))
+
+# Size (expect 217 areas, and 14,322 rows if nothing else was removed)
+n_distinct(df_wb_clean$country)
+nrow(df_wb_clean)
+
+# Type and range of year
+class(df_wb_clean$year)
+range(df_wb_clean$year)
+
+# Missing GDP values
+sum(is.na(df_wb_clean$gdp_pc))
+
+# Income groups
+count(df_wb_clean, income)
+```
+Most checks show no problems: there are no empty or missing country codes, the data has the expected 217 areas and 14,322 rows, `year` is numeric and runs from 1960 to 2025, and every area has an income group. The only issue is the 2,789 NA values in `gdp_pc`, which must be understood and dealt with.
+
+```{r}
+# Missing GDP values by year
+df_wb_clean %>%
+  filter(is.na(gdp_pc)) %>%
+  count(year)
+
+# Countries with the most missing values
+df_wb_clean %>%
+  filter(is.na(gdp_pc)) %>%
+  count(country, sort = TRUE) %>%
+  head(50)
+```
+These NA values make the panel unbalanced. By year, they are concentrated in the early decades and fall steadily towards today. By country, a few small territories have no GDP at all, and others are missing many years. A missing `gdp_pc` carries no information and cannot be used in the analysis, so we drop those rows. This leaves 11,533 observations.
+```{r}
+nrow((df_wb_clean))
+         
+df_wb_clean <- df_wb_clean %>%
+  filter(!is.na(gdp_pc))
+# We check that the NA values were taken out of the data frame
+sum(is.na(df_wb_clean$gdp_pc))
+```
+
+
+We now move on to `gdp_pc`. As it is already in 2015 US Dollars, there is no adjustment needed. However, we also need it in logs, so we add the log of `gdp_pc` as a new variable.
+```{r}
+# As log(0) is undefined, we must check that no GDP value is 0
+any(df_wb_clean$gdp_pc <= 0, na.rm = TRUE)
+
+df_wb_clean <- df_wb_clean %>%
+  mutate(log_gdp_pc = log(gdp_pc))
+```
+
+
+```{r}
+summary(df_wb_clean$gdp_pc)
+summary(df_wb_clean$log_gdp_pc)
+```
+`gdp_pc` ranges from about 123 to 247,170 US dollars, and its mean (12,575) is far above the median (4,045), so a few very rich economies pull the average up. After taking logs, the mean (8.41) is close to the median (8.31), so the distribution is much more symmetric. There are no zero or negative values.
+
+
+```{r}
+skim(df_wb_clean)
+```
+
+We keep `country` and `iso3c` to identify each area (`iso3c` is the 3-letter code also used in `df_ilo` and will be used for the merge), `year` to identify the period, `gdp_pc` and `log_gdp_pc` as our variables of interest and `income` because it is needed for Section 3.4.
