@@ -1,0 +1,972 @@
+---
+title: "Data Handling: Group Project 2026"
+subtitle: "Women at work"
+author:
+  - name: Batteau, Elias
+  - name: Collet, Stanislav
+  - name: Lewis, Oliver
+  - name: Von Muralt, Noé
+  - name: Wuillemin, William
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+highlight-style: dracula
+---
+
+```{r setup, echo=FALSE, eval=TRUE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, echo = TRUE, eval = TRUE)
+```
+
+# R Setup
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(Rilostat) # ILO data (Part 1 and test in Part 2)
+library(WDI)      # World Bank data (Part 1 and test in Part 2)
+library(httr2)    # own API wrappers (Part 2)
+
+# Working directory (not needed when the project is opened via the .Rproj file)
+# setwd("C:/GitHub/Data_Handling_2026_Group_Project")
+
+```
+
+# Part 1: Importing data with R packages
+
+## 1.1 - Female labour force participation (ILO)
+
+### 1.1.1 - Explain which indicator you've chosen, and describe it briefly in words.
+
+The ILOSTAT table of contents lists every series whose name contains "Labour force participation". The same rate is published in many versions, broken down by different characteristics. We narrow them down step by step.
+
+```{r}
+# Download the ILOSTAT table of contents for "Labour force participation"
+toc <- get_ilostat_toc(search = "Labour force participation", quiet = TRUE)
+
+# Number of matching series
+nrow(toc)
+names(toc)
+
+# Identification of the different dataset
+toc%>%as.data.frame()%>%select(id, freq, data.start, data.end, n.ref_area)%>%arrange(data.start)%>%print()
+```
+
+Our research question is about long-run structural change, so we need annual data. Monthly or quarterly data would add seasonality we do not need.
+
+```{r}
+# Keep only annual series ("A" = annual)
+annual <- toc %>%filter(freq == "A")
+
+# Number of candidates remaining
+nrow(annual)
+
+```
+
+`r nrow(toc) - nrow(annual)` of the `r nrow(toc)` matching series are not annual and are dropped.
+
+To keep women aged 45 to 54, the series must be split by both sex and age. Series split by sex and another characteristic (education, rural/urban area, marital status) but not by age only give one rate for all ages together, so they cannot be used.
+
+```{r}
+# Keep series with sex and age, oldest start year first
+candidate <- annual %>%
+  filter(startsWith(id, "EAP_DWAP_SEX_AGE")) %>%
+  select(id, indicator.label, data.start, data.end, n.ref_area, n.records) %>%
+  arrange(data.start)
+
+
+# Clean table with the dates
+candidate %>%select(id, data.start, data.end, n.ref_area) %>%   
+  knitr::kable(col.names = c("Series", "First year", "Last year", "Countries and regions"))
+```
+
+```{r}
+# Which candidate covers the most countries and regions? (desc() = largest first)
+candidate %>%
+  select(id, n.ref_area) %>%
+  arrange(desc(n.ref_area))
+```
+
+We decided to choose the indicator EAP_DWAP_SEX_AGE_RT_A, "Labour force participation rate by sex and age (%)", in annual data.seven annual series give the labour force participation rate with both sex and age as variable. However, only EAP_DWAP_SEX_AGE_RT_A ("Labour force participation rate by sex and age (%)") starts in 1946, which makes it the only series covering the whole period, from 1950 to 2025, that our research question needs.
+
+Our indicators measures the share of the working-age population in a given sex and age group that is economically active (employed or looking for work). We are then able to select the share of women between 45 and 54 who are economically active.
+
+We have chosen this indicator because:
+
+- It has the longest time series and the most countries.
+- It can be filtered for women in the right age bracket.
+- The annual frequency best matches the research question (a long-run structural pattern: how female participation changes as countries develop). The extra detail of monthly or quarterly data would not be particularly relevant, and we do not need to deal with seasonality. For our research question, we need a sample that includes countries at different income levels.
+- For the rest of the project, it allows us to merge it with GDP, which is also annual.
+
+### 1.1.2 - Import the full series, i.e. all years available from 1950 to 2025.
+
+Since we only need women aged 45 to 54, we use the filters so that the ILO server sends only the rows we need instead of the full dataset.
+
+To filter by age, we need the exact code ILOSTAT uses for the 45 to 54 age group. We first check which age codes exist, using a small download (in our case Swiss women only) as an example.
+
+```{r}
+# Small test download: Switzerland, women only
+test <- get_ilostat(
+  id      = "EAP_DWAP_SEX_AGE_RT_A",   # our chosen dataset
+  segment = "indicator",               # the dataset is organised by indicator
+  filters = list(
+    ref_area = "CHE",                  # only Switzerland, to keep it small
+    sex      = "SEX_F"                 # only women
+  ),
+  quiet   = TRUE
+)
+
+# Show only the 10-year age bands
+test %>% distinct(classif1) %>% filter(startsWith(classif1, "AGE_10YRBANDS"))
+```
+
+The ILO publishes the same data in several age-groups. The 10-year bands include the group we need, with the code `AGE_10YRBANDS_Y45-54`.
+
+We can now download the full series for all countries, keeping only women aged 45 to 54 and the years 1950 to 2025.
+
+```{r}
+# Download the full series: all countries, women aged 45-54, 1950-2025
+flfp_raw <- get_ilostat(
+  id          = "EAP_DWAP_SEX_AGE_RT_A",
+  segment     = "indicator",
+  time_format = "num",                    # years as numbers, not text
+  filters     = list(
+    sex      = "SEX_F",                   # women
+    classif1 = "AGE_10YRBANDS_Y45-54",    # age group 45-54 (code checked above)
+    timefrom = 1950,                      # first year
+    timeto   = 2025                       # last year
+  ),
+  quiet = TRUE
+)
+
+# Checks
+distinct(flfp_raw, sex, classif1)   # should be one row: SEX_F, AGE_10YRBANDS_Y45-54
+range(flfp_raw$time)                # first and last year
+n_distinct(flfp_raw$ref_area)       # number of countries and regions
+```
+
+The filters worked: the data only contain women aged 45 to 54. The series covers `r min(flfp_raw$time)` to `r max(flfp_raw$time)` for `r n_distinct(flfp_raw$ref_area)` countries. Please note that we keep the raw data here and that the cleaning (selecting variables, handling missing values, removing regional aggregates) is done in Part 3.
+
+## 1.2 - GDP per capita (World Bank)
+
+### 1.2.1 - Explain which indicator you've chosen, and describe it briefly in words.
+
+The instruction mentioned two R packages that give access to the World Bank data API. Those are WDI and wbstats. In this project we are going to use the [WDI package](https://cran.r-project.org/web/packages/WDI/index.html). We choose the WDI package because it is the one that the instruction mentiones in part 2 of the assignment but wbstats queries the same API and would give the same data.
+
+We search for the indicators whose name contains "GDP per capita".
+
+```{r}
+# Search the World Bank indicators by name
+search_wdi <- WDIsearch(string = "GDP per capita", field = "name") %>%  as.data.frame()
+```
+
+We filter for criteria (1) and (2), which can be read from the indicator name. The same currency makes countries comparable, and the inflation adjustment makes years comparable:
+
+- Same currency: "US\$" or "international \$" (not "LCU" = local currency unit)
+- Inflation-adjusted: "constant" prices, i.e. GDP measured every year at the prices of one base year (not "current" prices)
+
+```{r}
+# Flag the indicators that meet criteria (1) and (2)
+candidates_W <- search_wdi %>%
+  mutate(
+    same_currency = grepl("US\\$|international \\$", name),
+    inflation_adj = grepl("constant", name, ignore.case = TRUE)
+  )
+
+candidates_W %>% select(indicator, name, same_currency, inflation_adj)
+```
+
+Finally, we filter for criterion (3): we download the remaining candidates and compare their coverage, i.e. how far back each one goes and how many countries it covers.
+
+```{r}
+# Criteria (1) and (2): keep indicators with TRUE in both columns
+finalists <- candidates_W %>%
+  filter(same_currency, inflation_adj) %>%
+  filter(indicator != "NY.GDP.PCAP.PP.KD.87")   # archived: no longer served by the API
+
+df_finalists <- WDI(
+  country   = "all",
+  indicator = finalists$indicator,
+  # start = 1960 could be added; however, World Bank data always start in 1960
+  end       = 2025,
+  extra     = TRUE   # adds "region", used to drop aggregates like "World"
+)
+
+# Criterion (3): compare how far back and how widely each finalist is covered
+coverage <- df_finalists %>%
+  filter(region != "Aggregates") %>%   # keep countries only
+  pivot_longer(
+    cols      = any_of(finalists$indicator),
+    names_to  = "indicator",
+    values_to = "value"
+  ) %>%
+  filter(!is.na(value)) %>%
+  group_by(indicator) %>%
+  summarise(
+    first_year  = min(year),           # earliest year with data
+    last_year   = max(year),           # latest year with data
+    n_countries = n_distinct(iso3c),   # number of countries
+    n_obs       = n()                  # number of country-year values
+  ) %>%
+  arrange(first_year)
+
+coverage
+
+# Store the two finalists' coverage (used in the text below)
+kd  <- coverage %>% filter(indicator == "NY.GDP.PCAP.KD")
+ppp <- coverage %>% filter(indicator == "NY.GDP.PCAP.PP.KD")
+```
+
+One finalist, NY.GDP.PCAP.PP.KD.87, is excluded: querying the World Bank API directly returns the message that the indicator was not found and may have been deleted or archived.
+
+To conclude, we keep NY.GDP.PCAP.KD: it starts in `r kd$first_year` and covers `r kd$n_countries` countries, while NY.GDP.PCAP.PP.KD (in PPP, international \$) starts only in `r ppp$first_year` and covers `r ppp$n_countries` countries.
+
+It measures the value of all final goods and services produced in a country in a year, divided by its population, in constant 2015 US dollars (adjusted for inflation, so that years can be compared).
+
+### 1.2.2 - Import the full series, i.e. all years available up to 2025. What is the oldest date available?
+
+Now that we have selected the indicator, we import the entire series from the earliest possible date.
+
+```{r}
+# Import GDP per capita (constant 2015 US$) for all countries, all years up to 2025
+df_wb <- WDI(
+  country   = "all",
+  indicator = c(gdp_pc = "NY.GDP.PCAP.KD"),
+  # start     = 1960 : the first date that is available
+  end       = 2025,
+  extra     = TRUE   # adds "region", used in Part 3 to drop aggregates like "World"
+)
+
+head(df_wb)
+```
+
+```{r}
+# Oldest year with data
+min(df_wb$year[!is.na(df_wb$gdp_pc)])
+```
+
+The oldest date available is `r min(df_wb$year[!is.na(df_wb$gdp_pc)])`.
+
+## 1.3 - Check and store the data
+
+### 1.3.1 - Check the number of rows of your two data frames. How many are they? Print the number of rows as an answer.
+
+```{r}
+# Number of rows of each data frame
+cat("ILO data (flfp_raw):", nrow(flfp_raw), "rows\n")
+cat("World Bank data (df_wb):", nrow(df_wb), "rows\n")
+```
+
+The ILO data frame has `r nrow(flfp_raw)` rows and the World Bank data frame has `r nrow(df_wb)` rows.
+
+### 1.3.2 - Print the first 5 rows of each data frame.
+
+```{r}
+# First 5 rows of each data frame
+head(flfp_raw, 5)
+head(df_wb, 5)
+```
+
+### 1.3.3 - Store your data locally using saveRDS (the R format for R objects). This will make your next steps faster, as you don't have to load data from the API every time.
+
+```{r}
+# Create a "data" folder (if it does not exist yet)
+dir.create("data", showWarnings = FALSE)
+
+# Save both data frames in R's native format
+saveRDS(flfp_raw, "data/df_ilostat_womenparticipation.RDS")
+saveRDS(df_wb,    "data/df_WorldBank_gdp_capita.RDS")
+```
+
+# Part 2: Programming your own API functions
+
+## 2.1 - Female labour force participation (ILO)
+
+### 2.1.1 - Retrieve data using your own API wrapper
+
+The URL starts with the base URL of the ILO server and the dataflow, which identifies the table we request (agency `ILO`, dataset `DF_EAP_DWAP_SEX_AGE_RT`, version `1.0`). It is followed by the key, with one slot per dimension separated by dots: country, frequency (`A` = annual), measure (left empty, so all values are returned), sex (`SEX_F`) and age band (`AGE_10YRBANDS_Y45-54`); an empty country slot returns all countries, and several countries can be joined with `+`. Finally, the query parameters `startPeriod` and `endPeriod` set the period, and `format=csvfilewithlabels` requests a CSV file that R can read directly.
+
+```{r}
+# define the function
+get_ilodata <- function(country = "", year_from = 1950, year_to = 2025){
+
+# Build the URL : base URL + dataflow (agency = ILO, dataset ID = DF_EAP_DWAP_SEX_AGE_RT, version = 1.0)
+  base_url <- "https://sdmx.ilo.org/rest/data/ILO,DF_EAP_DWAP_SEX_AGE_RT,1.0/"
+
+# Empty list to collect one data frame per country
+  results <- list()
+
+# Loop : repeat the request for each country of the vector
+# with the default "" the loop runs once and returns all countries
+  for (cty in country) {
+
+# Creation of the key: one slot per dimension, separated by dots
+# Format : country . frequency . measure (empty = all) . sex . age
+    key <- paste0(cty, ".A..SEX_F.AGE_10YRBANDS_Y45-54")
+
+# query parameters: start year, end year, output format
+    final_url <- paste0(base_url,
+                        key, "?startPeriod=",
+                        year_from, "&endPeriod=",
+                        year_to, "&dimensionAtObservation=AllDimensions",
+                        "&format=csvfilewithlabels")
+# dimensionAtObservation returns a flat table (one row per observation) and format ensures that we receive a CSV
+
+# API call
+# Create the request (nothing is sent yet)
+    req <- request(final_url)
+
+# httr2 stops by itself when the server answers with an error : we switch that off
+# so that the answer always comes back and our own check below gives a clear error message
+    req <- req_error(req, is_error = function(resp) FALSE)
+
+# In case of issues with the server, we retry the request (and we pause at the end of each loop)
+# If the server refuses temporarily (403) or is busy (429, 503), wait and try again (max 4 times)
+# backoff : wait 5 seconds, then 10, then 15 before the next attempt
+    req <- req_retry(req, max_tries = 4,
+                     is_transient = function(resp) resp_status(resp) %in% c(403, 429, 503),
+                     backoff = function(i) 5 * i)
+
+# Send the request. If the server cannot be reached, show our own error message
+    resp <- tryCatch(
+      req_perform(req),
+      error = function(e) {
+        stop("Could not reach the ILO API. ",
+             "URL: ", final_url, "\nOriginal error: ", conditionMessage(e))
+      }
+    )
+
+# if request is not successful (anything other than 200 = OK)
+    if (resp_status(resp) != 200){
+      stop("The request was not successful for ", cty,
+           " (HTTP ", resp_status(resp), "). URL: ", final_url)
+    }
+
+# Turn the CSV into a data frame with the columns we need
+# and add it at the next free place of the list
+    df <- read.csv(text = resp_body_string(resp))
+    results[[length(results) + 1]] <- data.frame(
+      ref_area  = df$REF_AREA,        # country code, "CHE"
+      country   = df$Reference.area,  # country name
+      time      = df$TIME_PERIOD,     # year
+      obs_value = df$OBS_VALUE        # participation rate in %
+    )
+
+# Small pause between two countries, so that the server does not block us
+    Sys.sleep(1)
+  }
+
+# Stack the data frames of all countries into one
+  return(bind_rows(results))
+}
+```
+
+### 2.1.2 - Test your API
+
+#### 2.1.2.1 - Using a loop or a vectorized function, test your API. Apply your function to Switzerland, USA and Germany, filter the year to 2023 and check the output.
+
+We apply our function to Switzerland, the USA and Germany for the year 2023. The loop is inside our function: it sends one request per country and stacks the results with `bind_rows()`.
+
+```{r}
+# Countries to test (ISO 3-letter codes used by the ILO)
+countries <- c("CHE", "USA", "DEU")
+
+# The loop is inside our function: one call is enough for the three countries
+df_own <- get_ilodata(countries, year_from = 2023, year_to = 2023)
+
+df_own
+
+# Prepare our table for the comparison in 2.1.2.2 : keep the country code and the year
+# (to match the rows with Rilostat) and rename our value to value_api (to tell it apart from Rilostat's)
+df_own_short <- df_own |> select(ref_area, time, value_api = obs_value)
+
+df_own_short
+
+```
+Our function returns 3 rows, one per country, all for the year 2023. Each row contains the ISO country code (`ref_area`), the country name, the year (`time`) and the labour force participation rate of women aged 45 to 54 in percent (`obs_value`). Switzerland has the highest rate (86.3 %), closely followed by Germany (85.8 %), while the rate in the USA is about 10 percentage points lower (76.5 %). All values lie between 0 and 100 and are plausible for this age group, so the function returns the data we requested.
+
+#### 2.1.2.2 - Then do the same using the Rilostat package. Compare the results. Are the results the same?
+
+We now do the same request with the `Rilostat` package and compare both results.
+
+```{r}
+# Same request with the Rilostat package : the three countries, women aged 45-54, year 2023
+df_pkg <- get_ilostat(
+  id = "EAP_DWAP_SEX_AGE_RT_A",          # same indicator as our function (A = annual)
+  time_format = "num",                   # years as numbers, like in our function
+  filters = list(
+    ref_area = countries,                # CHE, USA, DEU (defined in 2.1.2.1)
+    sex = "SEX_F",                       # women
+    classif1 = "AGE_10YRBANDS_Y45-54",   # aged 45 to 54
+    timefrom = 2023,
+    timeto = 2023
+  ),
+  quiet = TRUE                           # no download messages in the report
+)
+
+# Put both results side by side (matched by country and year) and compute the difference
+# value_pkg = Rilostat, value_api = our function, difference = 0 means identical
+comparison <- df_pkg |>
+  select(ref_area, time, value_pkg = obs_value) |>
+  inner_join(df_own_short, by = c("ref_area", "time")) |>
+  mutate(difference = value_api - value_pkg)
+
+comparison
+```
+
+The results are the same. For Switzerland (86.278 %), Germany (85.836 %) and the USA (76.506 %) in 2023, our function and the Rilostat package return exactly the same participation rate: the difference is 0 for all three countries. Our API wrapper therefore retrieves the same data as the package.
+
+We also compare the full series (all countries, 1950 to 2025) from our function with the Rilostat data imported in Part 1, and print only the rows where the two sources differ. This is the most complete test of our function, to make sure that our analysis is based on valid data.
+
+```{r}
+# Download the full series with our function (all countries, 1950-2025)
+df_own_all <- get_ilodata()
+
+# Put both sources side by side : Rilostat (Part 1) and our function
+# full_join keeps every row, also the ones that exist in only one of the two sources
+comparison_all <- flfp_raw |>
+  select(ref_area, time, value_pkg = obs_value) |>
+  full_join(df_own_all |> select(ref_area, time, value_api = obs_value),
+            by = c("ref_area", "time")) |>
+  mutate(difference = value_api - value_pkg)
+
+# How many rows have which difference ? (0 = identical, 0.001 = rounding, NA = row in only one source)
+comparison_all |> count(difference = round(difference, 3))
+
+# Keep only the rows that are not identical :
+# - a difference larger than 0.0011
+# - or a missing value (the row exists in only one of the two sources)
+# Why 0.0011 : the values are published with 3 decimals, and Rilostat (ILO bulk files) and our
+# function (ILO SDMX API) round the same underlying value separately. Many rows therefore differ systematically by exactly 0.001 (e.g. 51.807 vs 51.808), which is a rounding gap, not a real difference.
+# We use 0.0011 instead of 0.001 because the computer stores decimals with tiny errors
+# (a gap of "0.001" can be stored as 0.0010000001 and would otherwise be counted as larger than 0.001)
+different <- comparison_all |>
+  filter(is.na(difference) | abs(difference) > 0.0011)
+
+# Number of rows compared and number of rows that differ
+nrow(comparison_all)
+nrow(different)
+
+# Print the rows that differ (empty table = both sources give the same data, up to rounding)
+different
+```
+
+Our function returns exactly the same `r nrow(comparison_all)` country-year observations as Rilostat: no observation is missing in either source. `r sum(round(comparison_all$difference, 3) == 0, na.rm = TRUE)` values are identical, and the remaining `r sum(round(comparison_all$difference, 3) != 0, na.rm = TRUE)` differ by exactly 0.001 percentage points, always in the same direction. This is a rounding difference: the ILO publishes the rate with three decimals, and its bulk download files (used by Rilostat) and its SDMX API (used by our function) round the same underlying value separately. After allowing for this rounding, no difference remains, so our API wrapper retrieves the same data as the Rilostat package.
+
+## 2.2 - Bonus: GDP per capita (World Bank)
+
+### 2.2.1 - Import the data using your own API wrapper
+
+The URL starts with the base URL of the World Bank API (version 2). The country and the indicator are then given as two path segments (`/country/CHE/indicator/NY.GDP.PCAP.KD`), and the query parameters set the output format (`format=json`, otherwise the API returns XML), the period (`date=1960:2025`) and the number of rows per page (`per_page=20000`, high enough to receive all observations in one page). The answer is a JSON list: its first element contains the metadata (for example the total number of observations) and its second element contains the observations.
+
+```{r}
+# define the function
+get_wbdata <- function(indicator = "NY.GDP.PCAP.KD", country = "all", year_from = 1960, year_to = 2025){
+
+# Base URL of the World Bank API (version 2)
+  base_url <- "https://api.worldbank.org/v2/country/"
+
+# Empty list to collect one data frame per country
+  results <- list()
+
+# Loop : repeat the request for each country of the vector
+# with the default "all" the loop runs once and returns all countries and regions
+  for (cty in country) {
+
+# Build the URL : base URL + country + indicator (path parameters) + query parameters
+# format=json : otherwise the API returns XML
+# date=START:END : the period
+# per_page=20000 : number of rows per page, high enough to receive everything in one page
+    final_url <- paste0(base_url, cty,
+                        "/indicator/", indicator,
+                        "?format=json",
+                        "&date=", year_from, ":", year_to,
+                        "&per_page=20000")
+
+# API call
+# Create the request (nothing is sent yet)
+    req <- request(final_url)
+
+# httr2 stops by itself when the server answers with an error : we switch that off
+# so that the answer always comes back and our own check below gives a clear error message
+    req <- req_error(req, is_error = function(resp) FALSE)
+
+# In case of issues with the server, we retry the request (and we pause at the end of each loop)
+# If the server refuses temporarily (403) or is busy (429, 503), wait and try again (max 4 times)
+# backoff : wait 5 seconds, then 10, then 15 before the next attempt
+    req <- req_retry(req, max_tries = 4,
+                     is_transient = function(resp) resp_status(resp) %in% c(403, 429, 503),
+                     backoff = function(i) 5 * i)
+
+# Send the request. If the server cannot be reached, show our own error message
+    resp <- tryCatch(
+      req_perform(req),
+      error = function(e) {
+        stop("Could not reach the World Bank API. ", "URL: ", final_url, "\nOriginal error: ", conditionMessage(e))
+      }
+    )
+
+# if request is not successful (anything other than 200 = OK)
+    if (resp_status(resp) != 200){
+      stop("The request was not successful for ", cty, " (HTTP ", resp_status(resp), "). URL: ", final_url)
+    }
+
+# Turn the JSON answer into an R list
+# first element = metadata (page, total number of observations), second element = the observations
+    body <- resp_body_json(resp)
+
+# An invalid indicator still returns status 200, with a message instead of data
+    if (!is.null(body[[1]]$message)) {
+      stop("World Bank API error for ", cty, ": ", body[[1]]$message[[1]]$value, ". URL: ", final_url)
+    }
+
+    meta <- body[[1]]
+    obs  <- body[[2]]
+
+# No observations at all (e.g. no data for this country and period)
+    if (is.null(obs) || length(obs) == 0) {
+      stop("No data returned for ", cty, ". URL: ", final_url)
+    }
+
+# Turn the list of observations into a data frame (one row per observation)
+# sapply goes through each observation and extracts one field ; missing values (NULL) become NA
+    df <- data.frame(
+      country   = sapply(obs, function(x) x$country$value),   # country name
+      iso2c     = sapply(obs, function(x) x$country$id),       # 2-letter code (also exists for regions)
+      iso3c     = sapply(obs, function(x) x$countryiso3code),  # 3-letter code (empty for some regions)
+      year      = as.integer(sapply(obs, function(x) x$date)), # year
+      indicator = sapply(obs, function(x) x$indicator$id),     # indicator code
+      value     = sapply(obs, function(x) if (is.null(x$value)) NA else x$value)  # GDP per capita
+    )
+
+# Check that we received all the observations the API says exist (first element of the answer)
+    if (nrow(df) != meta$total) {
+      warning("Received ", nrow(df), " of ", meta$total,
+              " observations for ", cty, ". Increase per_page.")
+    }
+
+# Add the data frame at the next free place of the list
+    results[[length(results) + 1]] <- df
+
+# Small pause between two countries, so that the server does not block us
+    Sys.sleep(1)
+  }
+
+# Stack the data frames of all countries into one
+  return(bind_rows(results))
+}
+```
+
+### 2.2.2 - Test your API
+
+#### 2.2.2.1 - Using a loop or a vectorized function, test your API. Apply your function to Switzerland, USA and Germany, filter the year to 2023 and check the output.
+
+We apply our function to Switzerland, the USA and Germany for the year 2023. As for the ILO, the loop is inside our function: it sends one request per country and stacks the results with `bind_rows()`.
+
+```{r}
+# Countries to test (ISO 3-letter codes, accepted by the World Bank API)
+countries_wb <- c("CHE", "USA", "DEU")
+
+# The loop is inside our function: one call is enough for the three countries
+df_wb_own <- get_wbdata("NY.GDP.PCAP.KD", countries_wb, year_from = 2023, year_to = 2023)
+
+df_wb_own
+```
+
+Our function returns 3 rows, one per country, all for the year 2023. Each row contains the country name, the 2-letter code (`iso2c`), the 3-letter code (`iso3c`), the year, the indicator (`NY.GDP.PCAP.KD`) and its value: GDP per capita in constant 2015 US dollars. In 2023, Switzerland has the highest GDP per capita (about 92,948 US$), ahead of the USA (about 65,667 US$) and Germany (about 44,369 US$). The values are positive and plausible for three high-income economies, so the function returns the data we requested.
+
+#### 2.2.2.2 - Then do the same using the WDI package. Are the results the same?
+
+We now do the same request with the `WDI` package and compare both results.
+
+```{r}
+# Same request with the WDI package : the three countries, year 2023
+df_wb_pkg <- WDI(
+  country = c("CH", "US", "DE"),          # WDI uses the 2-letter codes
+  indicator = "NY.GDP.PCAP.KD",           # GDP per capita, constant 2015 US$
+  start = 2023,
+  end = 2023
+)
+
+# Put both results side by side (matched by country and year) and compute the difference
+# value_pkg = WDI, value_api = our function, difference = 0 means identical
+comparison_wb <- df_wb_pkg |>
+  select(iso3c, year, value_pkg = NY.GDP.PCAP.KD) |>
+  inner_join(
+    df_wb_own |> select(iso3c, year, value_api = value),
+    by = c("iso3c", "year")
+  ) |>
+  mutate(difference = value_api - value_pkg)
+
+comparison_wb
+```
+
+The results are the same. For Switzerland (about 92,948 US$), Germany (about 44,369 US$) and the USA (about 65,667 US$) in 2023, our function and the WDI package return exactly the same GDP per capita: the difference is 0 for all three countries. This is expected, since both query the same World Bank API.
+
+As for the ILO, we go further and compare the full series (all countries and regions, 1960 to 2025) from our function with the WDI data imported in Part 1, and print only the rows where the two sources differ.
+
+```{r}
+# Download the full series with our function (all countries and regions, 1960-2025)
+df_wb_own_all <- get_wbdata("NY.GDP.PCAP.KD")
+
+# Prepare both sources : same columns, with a different name for the value
+# We match the rows with iso2c (2-letter code) and year : unlike iso3c, iso2c also exists for regions
+wb_pkg_all <- df_wb |> select(iso2c, year, value_pkg = gdp_pc)
+wb_api_all <- df_wb_own_all |> select(iso2c, year, value_api = value)
+
+# Rows that exist in only one of the two sources (0 and 0 = both sources have the same rows)
+nrow(anti_join(wb_pkg_all, wb_api_all, by = c("iso2c", "year")))
+nrow(anti_join(wb_api_all, wb_pkg_all, by = c("iso2c", "year")))
+
+# Put both sources side by side and compute the difference
+comparison_wb_all <- inner_join(wb_pkg_all, wb_api_all, by = c("iso2c", "year")) |>
+  mutate(difference = value_api - value_pkg)
+
+# Keep only the rows that are not identical :
+# - a value that is missing (NA) in one source but not in the other
+# - or a real difference between the two values
+# Unlike the ILO data, the World Bank data has many NA values (one row for every year),
+# so two NA values count as identical here.
+# Both sources query the same World Bank API, so we expect no rounding gap :
+# 0.000001 only ignores the tiny errors with which the computer stores decimals
+different_wb <- comparison_wb_all |>
+  filter(is.na(value_api) != is.na(value_pkg) |
+           (!is.na(difference) & abs(difference) > 0.000001))
+
+# Number of rows compared and number of rows that differ
+nrow(comparison_wb_all)
+nrow(different_wb)
+
+# Print the rows that differ (empty table = both sources give exactly the same data)
+different_wb
+```
+
+Both sources contain exactly the same `r nrow(comparison_wb_all)` rows (266 countries and regions × 66 years, from 1960 to 2025): no row exists in only one of them. All values are identical, and the missing values (`NA`) are in the same places in both sources, so not a single row differs. Unlike for the ILO, there is not even a rounding gap, because our function and the WDI package query the same World Bank API. Our API wrapper therefore retrieves exactly the same data as the WDI package.
+
+# Part 3: Cleaning, merging and analysing the data
+
+## 3.1 - First data exploration
+
+### 3.1.1 - Comment on the structure of your data frames and describe the types of variables they contain.
+
+In order to comment on the structure of the data frame, we must first get a summary of the data in question. We use the `glimpse` function:
+
+```{r}
+glimpse(df_ilo)
+glimpse(df_wb)
+```
+
+Both data frames have one row per country and year. `df_ilo` has 3,985 rows from 1950 to 2025, and `df_wb` has 17,556 rows from 1960 to 2025.
+
+Each has two numeric columns, and the rest are character (9 in `df_ilo`, 11 in `df_wb`). In `df_ilo`, the numeric columns are `time` (the year) and `obs_value`, both stored as doubles, and `obs_value` is the participation rate of women aged 45 to 54 in percent. In `df_wb`, they are `year` (the year) and `gdp_pc`, and `gdp_pc` is GDP per capita in constant 2015 US dollars.
+
+### 3.1.2 - Load the datasets. Briefly describe the content of each dataset according to the five key aspects described above. For aspect 3 (quality), perform two smell tests per dataset.
+
+### df_ilo
+1. **Definitions**. `obs_value` is the labour force participation rate, the share of women aged 45 to 54 who are either employed or looking for work. `ref_area` is the country code and `time` is the year.
+
+2. **Units**. obs_value is in percent, and time is in calendar years.
+
+3. **Quality**. We chose these two tests because they check what matters most for the later analysis. Duplicate country-years would be counted twice after the merge, and a participation rate is a percentage, so missing or out-of-range values would point to errors in the data.
+
+```{r}
+# Smell test 1: duplicate country-year rows
+df_ilo %>%
+  count(ref_area, time) %>%
+  filter(n > 1)
+
+# Smell test 2: missing values and range of the rate
+sum(is.na(df_ilo$obs_value))
+range(df_ilo$obs_value)
+```
+
+No country-year appears more than once, so there are no duplicates. There are also no missing values, and the values run from 2.061 to 100, which is plausible for a percentage. A maximum of exactly 100 is surprising for women aged 45 to 54, so we look at it in section 3.2.
+
+4. **Unit of observation**. Each row is one country or area in one year. There are 225 codes, and since there are fewer than 200 UN recognised countries, we will investigate this further in section 3.2.
+
+5. **Time structure**. It is an unbalanced panel from 1950 to 2025. Coverage is uneven, with far more observations in recent years than in early decades.
+
+### df_wb
+
+**1. Definitions.** `gdp_pc` is GDP per capita, the value of all final goods and services produced in a country in a year divided by its population. It is adjusted for inflation. `iso3c` is the 3-letter country code and `year` is the year. `income` is the World Bank income group classification of a country.
+
+**2. Units.** `gdp_pc` is in constant 2015 US dollars, and `year` is in calendar years.
+
+**3. Quality.** We chose these two smell tests because they check what matters most for the merge. Groups of countries are not countries and would be counted as extra observations, and rows without a country code cannot be matched to the ILO data.
+
+```{r}
+# Smell test 1: using regions, we check for areas that are groups, not countries
+df_wb %>%
+  distinct(country, region) %>%
+  filter(is.na(region) | region == "Aggregates") %>%
+  nrow()
+
+# Smell test 2: empty country codes
+sum(df_wb$iso3c == "")
+```
+
+49 of the 266 areas are aggregates or groups, such as "World" or "High income", and not countries. `iso3c` is also empty for 330 rows (5 areas), so these rows cannot be matched to the ILO codes.
+
+**4. Unit of observation.** Each row is one area in one year. Of the 266 areas, 217 are countries or territories, and 49 are groups of countries.
+
+**5. Time structure.** It is a panel from 1960 to 2025. Every area has a row for every year (266 × 66 = 17,556 rows), so any missing values appear as `NA`, not as absent rows.
+
+## 3.2 - Data Cleaning
+
+Let's first clean the `df_ilo` data frame.
+
+`ref_area` identifies the countries, so we keep it. However, there are 225 codes and fewer than 200 UN recognised countries, so we investigate the extra codes. The code list was exported once in the console and checked against the UN member states.
+
+```{r}
+#| eval: false 
+# Change to eval TRUE and install writexl (line 39) if you want to run this code and override the old ref_area_list file
+write_xlsx(distinct(df_ilo, ref_area), "ref_area_list.xlsx")
+```
+
+36 codes are not UN member states: 1 no longer exists (ANT), 3 are disputed or partly recognised (KOS, TWN, PSE) and the rest are territories of other countries. We only delete ANT, the one code of a country that no longer exists. The other codes are separate areas with their own data, and dropping them would remove observations without a clear reason. We keep in mind that they are not all sovereign countries when we interpret the results.
+
+```{r}
+df_ilo_clean <- df_ilo %>%
+  filter(ref_area != "ANT")
+```
+
+`source` could explain duplicate country-year rows, but as seen in the smell test from 3.1, there are no duplicates. The column is therefore not needed.
+
+```{r}
+df_ilo_clean <- df_ilo_clean %>%
+  select(-source)
+```
+
+We must then look at the `indicator`, `sex` and `classif1` categories to see whether they represent only one value (for `sex` it must be female and for `classif1` it must be women between the age of 45 and 54).
+
+```{r}
+distinct(df_ilo, indicator)
+distinct(df_ilo, sex)
+distinct(df_ilo, classif1)
+```
+
+Each has one value: women, aged 45 to 54. Therefore, these columns are no longer needed.
+
+```{r}
+df_ilo_clean <- df_ilo_clean %>%
+  select(-indicator, -sex, -classif1)
+```
+
+We now take a look at the metadata columns `obs_status`, `note_classif`, `note_indicator` and `note_source`. These are codes we cannot interpret and are not needed for the analysis, and three of them are almost entirely empty. Hence we can delete them too.
+
+```{r}
+df_ilo_clean <- df_ilo_clean %>%
+  select(-obs_status, -note_classif, -note_indicator, -note_source)
+```
+
+We check that the columns were deleted accurately and comment on `time` and `obs_value`.
+
+```{r}
+skim(df_ilo_clean)
+```
+
+We can see that `n_missing` is zero for both columns, which indicates there are no NA values (as already seen for `obs_value` in 3.1). `time` is numeric (years) with a minimum of 1950 and a maximum of 2025. The mean of `time` is nearer to 2025 than 1950 because there are more datapoints, and hence more rows with a value, the closer we get to today.
+
+```{r}
+summary(df_ilo_clean$obs_value)
+```
+
+`obs_value` is the participation rate in percent. The summary shows a minimum of 2.061, a median of 66.361, a mean of 62.636 and a maximum of 100. All values lie between 0 and 100, which is plausible for a percentage (see 3.1). The mean is below the median, so some countries with very low participation pull the average down. A maximum of exactly 100 is surprising for women aged 45 to 54, so we check it below.
+
+```{r}
+df_ilo_clean %>%
+  filter(obs_value == 100) %>%
+  print(n = Inf)
+```
+
+As MSR is a small country, this result, although improbable, is plausible, and therefore we will keep it in our data.
+
+In summary, we keep only `ref_area`, `time` and `obs_value`. `ref_area` (country code) and `time` (year) identify each observation and will be used to merge with the World Bank data, and `obs_value` (participation rate in %) is our variable of interest.
+
+Let's now clean the `df_wb` data frame.
+
+`country` identifies the areas, so we keep it. There are 266 of them, so we must make sure we only keep countries and no groups. As seen in 3.1, 49 of the 266 areas are aggregates or groups (such as "World" or "High income") and not countries. We use the `region` column to remove them, as they either have the region "Aggregates" or no region at all.
+
+```{r}
+df_wb_clean <- df_wb %>%
+  filter(!is.na(region), region != "Aggregates")
+
+count(df_wb_clean, region)
+```
+
+The count shows that no aggregates or missing regions remain. As seen in 3.1, `iso3c` is also empty for some rows. These cannot be matched to the ILO data, so we remove any that are left.
+
+```{r}
+df_wb_clean <- df_wb_clean %>%
+  filter(iso3c != "")
+```
+
+We keep `iso3c` and delete `iso2c`, because `iso3c` is the 3-letter code that is also used in `df_ilo`. `status` is empty in every row, and `lastupdated` is the date the website was last updated, which is irrelevant to our analysis. We have now used `region` to clean the list of countries, so we have no further use for it. `capital`, `longitude`, `latitude` and `lending` are not relevant to our analysis either. We keep `income`, as it is needed for Section 3.4.
+
+```{r}
+df_wb_clean <- df_wb_clean %>%
+  select(-iso2c, -status, -lastupdated, -region,
+         -capital, -longitude, -latitude, -lending)
+
+skim(df_wb_clean) # Used to see if the columns were properly deleted
+```
+
+We check that the cleaned data is complete and as expected, because missing country codes cannot be merged, and the number of areas, the years and the income groups should match what we kept.
+
+```{r}
+# Empty or missing country codes
+sum(df_wb_clean$iso3c == "")
+sum(is.na(df_wb_clean$iso3c))
+
+# Size (expect 217 areas, and 14,322 rows if nothing else was removed)
+n_distinct(df_wb_clean$country)
+nrow(df_wb_clean)
+
+# Type and range of year
+class(df_wb_clean$year)
+range(df_wb_clean$year)
+
+# Missing GDP values
+sum(is.na(df_wb_clean$gdp_pc))
+
+# Income groups
+count(df_wb_clean, income)
+```
+
+Most checks show no problems: there are no empty or missing country codes, the data has the expected 217 areas and 14,322 rows, `year` is numeric and runs from 1960 to 2025, and every area has an income group. The only issue is the 2,789 NA values in `gdp_pc`, which must be understood and dealt with.
+
+```{r}
+# Missing GDP values by year
+df_wb_clean %>%
+  filter(is.na(gdp_pc)) %>%
+  count(year)
+
+# Countries with the most missing values
+df_wb_clean %>%
+  filter(is.na(gdp_pc)) %>%
+  count(country, sort = TRUE) %>%
+  head(50)
+```
+
+These NA values make the panel unbalanced. By year, they are concentrated in the early decades and fall steadily towards today. By country, a few small territories have no GDP at all, and others are missing many years. A missing `gdp_pc` carries no information and cannot be used in the analysis, so we drop those rows. This leaves 11,533 observations.
+
+```{r}
+nrow((df_wb_clean))
+         
+df_wb_clean <- df_wb_clean %>%
+  filter(!is.na(gdp_pc))
+# We check that the NA values were taken out of the data frame
+sum(is.na(df_wb_clean$gdp_pc))
+```
+
+We now move on to `gdp_pc`. As it is already in 2015 US Dollars, there is no adjustment needed. However, we also need it in logs, so we add the log of `gdp_pc` as a new variable.
+
+```{r}
+# As log(0) is undefined, we must check that no GDP value is 0
+any(df_wb_clean$gdp_pc <= 0, na.rm = TRUE)
+
+df_wb_clean <- df_wb_clean %>%
+  mutate(log_gdp_pc = log(gdp_pc))
+```
+
+```{r}
+summary(df_wb_clean$gdp_pc)
+summary(df_wb_clean$log_gdp_pc)
+```
+
+`gdp_pc` ranges from about 123 to 247,170 US dollars, and its mean (12,575) is far above the median (4,045), so a few very rich economies pull the average up. After taking logs, the mean (8.41) is close to the median (8.31), so the distribution is much more symmetric. There are no zero or negative values.
+
+
+```{r}
+skim(df_wb_clean)
+```
+
+We keep `country` and `iso3c` to identify each area (`iso3c` is the 3-letter code also used in `df_ilo` and will be used for the merge), `year` to identify the period, `gdp_pc` and `log_gdp_pc` as our variables of interest and `income` because it is needed for Section 3.4.
+
+## Merge the data
+
+**1.**
+
+**2.**
+
+**3.**
+
+**4.**
+
+**5.**
+
+```{r}
+
+```
+
+
+## Explore and visualize the data
+
+### Trends in female labour force participation
+
+**1.**
+
+**2.**
+
+```{r}
+
+```
+
+### Trends in GDP per capita
+
+**1.**
+
+**2.**
+
+```{r}
+
+```
+
+
+## Goldin's U-Shape theory
+
+### Theoretical considerations
+
+**1.**
+
+**2.**
+
+**3.**
+
+### Reproducing Goldin's graph
+
+**1.**
+
+**2.**
+
+**3.**
+
+```{r}
+
+```
+
+#### Change over time
+
+```{r}
+
+```
+
+#### Female labour force participation in Switzerland
+
+**1.**
+
+**2.**
+
+```{r}
+
+```
+
+
+## Wrap up
+
+### Your data story (bonus reflection, not graded)
+
+### Further steps
