@@ -1,0 +1,347 @@
+---
+title: "Data Handling: Group Project 2026"
+subtitle: "Women at work"
+author:
+  - name: Batteau, Elias
+  - name: Collet, Stanislav
+  - name: Lewis, Oliver
+  - name: von Muralt, Noé
+  - name: Wuillemin, William
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+highlight-style: dracula
+---
+
+```{r setup, echo=FALSE, eval=TRUE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, echo = TRUE, eval = TRUE)
+```
+
+# How to use this template
+
+Write your answers below each question heading. Feel free to use standard markdown syntax for your text. For instance, *this*, or **this**, or maybe you want to write code inline with `2+2`. For bullet points and lists, use
+
+  - this
+  - is
+  - a bullet point (make sure you have one full empty line before the list starts)
+
+Your code should be written in **code chunks**, with clear comments explaining each step. When you run the entire document, all objects created in the chunks are saved in your R environment. If you want to run the code line by line instead, use the Run button or Ctrl + Enter (Cmd + Enter on Mac).
+
+```{r}
+# This is a vector. If I print it, it appears in the rendered document.
+vec <- c(2, 2)
+print(vec)
+```
+
+```{r, eval=FALSE}
+# eval = FALSE: code chunk is shown, but not executed (no output is printed)
+vec <- c(2, 2)
+vec
+```
+
+```{r, echo=FALSE}
+# echo = FALSE: code is executed, but the code itself is hidden (only output is printed)
+vec <- c(2, 2)
+vec
+```
+
+```{r, echo=TRUE, results='hide'}
+# results = 'hide': code is shown, executed, but output is hidden
+vec <- c(2, 2)
+vec
+```
+
+Delete this section before you submit.
+
+
+# R Setup
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(Rilostat) # ILO data (Part 1 and test in Part 2)
+library(WDI)      # World Bank data (Part 1 and test in Part 2)
+library(httr2)    # own API wrappers (Part 2)
+```
+
+
+# Part 1: Importing data with R packages
+
+## Female labour force participation (ILO)
+
+**1.**
+
+**2.**
+
+```{r}
+
+```
+
+
+## GDP per capita (World Bank)
+
+**1.** [Your answer: which indicator you chose and why. It must be in the same currency for all countries, adjusted for inflation, and go back as far as possible.]
+
+**2.** [Your answer: the oldest year available.]
+
+```{r}
+# Search the World Bank indicators that match "gdp per capita"
+wb_search <- WDIsearch("gdp per capita")
+wb_search
+
+# Import GDP per capita (constant 2015 US$) for all countries, up to 2025
+# extra = TRUE adds region and income group (useful to drop aggregates later)
+df_wb <- WDI(
+  country = "all",
+  indicator = "NY.GDP.PCAP.KD",
+  start = 1960,
+  end = 2025,
+  extra = TRUE
+)
+
+# Oldest year with an actual value
+min(df_wb$year[!is.na(df_wb$NY.GDP.PCAP.KD)])
+```
+
+
+## Check and store the data
+
+**1.**
+
+**2.**
+
+**3.**
+
+```{r}
+
+```
+
+
+# Part 2: Programming your own API functions
+
+## Female labour force participation (ILO)
+
+### Retrieve data using your own API wrapper
+
+[Your 2-3 sentences: how the URL is built. Base URL + dataflow (agency, dataset ID, version) + key (one slot per dimension, separated by dots, empty slot = all values) + query parameters (start year, end year, format).]
+
+```{r, file = "R/get_ilodata.R"}
+```
+
+### Test your API
+
+**1.** [Your comment on the output of your own function.]
+
+```{r}
+# Countries to test (ISO 3-letter codes used by the ILO)
+countries <- c("CHE", "USA", "DEU")
+
+# Own function, applied to each country with lapply(), then stacked
+df_own <- lapply(countries, get_ilodata, year_from = 2023, year_to = 2023) |>
+  bind_rows()
+
+# Keep the columns we need to compare
+df_own_short <- df_own |>
+  select(ref_area = REF_AREA, time = TIME_PERIOD, value_api = OBS_VALUE)
+
+df_own_short
+```
+
+**2.** [Your answer: are the results the same as with Rilostat?]
+
+```{r}
+# Same request with the Rilostat package
+df_pkg <- get_ilostat(
+  id = "EAP_DWAP_SEX_AGE_RT_A",
+  time_format = "num",
+  filters = list(
+    ref_area = countries,
+    sex = "SEX_F",
+    classif1 = "AGE_10YRBANDS_Y45-54",
+    timefrom = 2023,
+    timeto = 2023
+  )
+)
+
+# Put both results side by side and compute the difference
+comparison <- df_pkg |>
+  select(ref_area, time, value_pkg = obs_value) |>
+  inner_join(df_own_short, by = c("ref_area", "time")) |>
+  mutate(difference = value_api - value_pkg)
+
+comparison
+```
+
+
+## Bonus: GDP per capita (World Bank)
+
+Optional.
+
+### Import the data using your own API wrapper
+
+```{r, file = "R/get_wbdata.R"}
+```
+
+### Test your API
+
+[Your answer: are the results the same as with WDI?]
+
+```{r}
+# Own function, applied to each country with lapply(), then stacked
+countries_wb <- c("CHE", "USA", "DEU")
+
+df_wb_own <- lapply(
+  countries_wb,
+  function(cty) get_wbdata("NY.GDP.PCAP.KD", cty, 2023, 2023)
+) |>
+  bind_rows()
+
+df_wb_own
+
+# Same request with the WDI package
+df_wb_pkg <- WDI(
+  country = c("CH", "US", "DE"),
+  indicator = "NY.GDP.PCAP.KD",
+  start = 2023,
+  end = 2023
+)
+
+# Put both results side by side and compute the difference
+comparison_wb <- df_wb_pkg |>
+  select(iso3c, year, value_pkg = NY.GDP.PCAP.KD) |>
+  inner_join(
+    df_wb_own |> select(iso3c, year, value_api = value),
+    by = c("iso3c", "year")
+  ) |>
+  mutate(difference = value_api - value_pkg)
+
+comparison_wb
+```
+
+
+# Part 3: Cleaning, merging and analysing the data
+
+## R Setup
+
+```{r, eval=FALSE}
+# Import the data you saved in Part 1
+# (set eval = TRUE once your data are saved)
+df_ilo <- readRDS("data/df_ilostat_womenparticipation.RDS")
+df_wb <- readRDS("data/df_WorldBank_gdp_capita.RDS")
+```
+
+
+## First data exploration
+
+**1.**
+
+**2.**
+
+```{r}
+
+```
+
+
+## Data cleaning
+
+### ILO data
+
+```{r}
+
+```
+
+### World Bank data
+
+```{r}
+
+```
+
+
+## Merge the data
+
+**1.**
+
+**2.**
+
+**3.**
+
+**4.**
+
+**5.**
+
+```{r}
+
+```
+
+
+## Explore and visualize the data
+
+### Trends in female labour force participation
+
+**1.**
+
+**2.**
+
+```{r}
+
+```
+
+### Trends in GDP per capita
+
+**1.**
+
+**2.**
+
+```{r}
+
+```
+
+
+## Goldin's U-Shape theory
+
+### Theoretical considerations
+
+**1.**
+
+**2.**
+
+**3.**
+
+### Reproducing Goldin's graph
+
+**1.**
+
+**2.**
+
+**3.**
+
+```{r}
+
+```
+
+#### Change over time
+
+```{r}
+
+```
+
+#### Female labour force participation in Switzerland
+
+**1.**
+
+**2.**
+
+```{r}
+
+```
+
+
+## Wrap up
+
+### Your data story (bonus reflection, not graded)
+
+### Further steps
