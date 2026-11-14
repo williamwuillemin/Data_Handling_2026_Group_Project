@@ -29,6 +29,7 @@ library(ggplot2)
 library(Rilostat) # ILO data (Part 1 and test in Part 2)
 library(WDI)      # World Bank data (Part 1 and test in Part 2)
 library(httr2)    # own API wrappers (Part 2)
+library(skimr)    # skim() : summary of a data frame (Part 3)
 
 # Working directory (not needed when the project is opened via the .Rproj file)
 # setwd("C:/GitHub/Data_Handling_2026_Group_Project")
@@ -154,7 +155,7 @@ The filters worked: the data only contain women aged 45 to 54. The series covers
 
 ### 1.2.1 - Explain which indicator you've chosen, and describe it briefly in words.
 
-The instruction mentioned two R packages that give access to the World Bank data API. Those are WDI and wbstats. In this project we are going to use the [WDI package](https://cran.r-project.org/web/packages/WDI/index.html). We choose the WDI package because it is the one that the instruction mentiones in part 2 of the assignment but wbstats queries the same API and would give the same data.
+The instruction mentioned two R packages that give access to the World Bank data API. Those are WDI and wbstats. In this project we are going to use the [WDI package](https://cran.r-project.org/web/packages/WDI/index.html). We choose the WDI package because it is the one that the instruction mentions in part 2 of the assignment but wbstats queries the same API and would give the same data.
 
 We search for the indicators whose name contains "GDP per capita".
 
@@ -162,7 +163,7 @@ We search for the indicators whose name contains "GDP per capita".
 # Search the World Bank indicators by name
 search_wdi <- WDIsearch(string = "GDP per capita", field = "name") %>%  as.data.frame()
 ```
-
+ 
 We filter for criteria (1) and (2), which can be read from the indicator name. The same currency makes countries comparable, and the inflation adjustment makes years comparable:
 
 - Same currency: "US\$" or "international \$" (not "LCU" = local currency unit)
@@ -650,11 +651,17 @@ Both sources contain exactly the same `r nrow(comparison_wb_all)` rows (266 coun
 
 ## 3.1 - First data exploration
 
+We use the data imported with the R packages in Part 1. Part 2 showed that our own API functions return the same values (up to rounding at the third decimal place for the ILO), and the package data also contains the variables we need for the cleaning and the analysis, such as the region and the income group of each country.
+
 ### 3.1.1 - Comment on the structure of your data frames and describe the types of variables they contain.
 
 In order to comment on the structure of the data frame, we must first get a summary of the data in question. We use the `glimpse` function:
 
 ```{r}
+# Import the data saved in Part 1 (Rilostat and WDI)
+df_ilo <- readRDS("data/df_ilostat_womenparticipation.RDS")
+df_wb  <- readRDS("data/df_WorldBank_gdp_capita.RDS")
+
 glimpse(df_ilo)
 glimpse(df_wb)
 ```
@@ -666,6 +673,7 @@ Each has two numeric columns, and the rest are character (9 in `df_ilo`, 11 in `
 ### 3.1.2 - Load the datasets. Briefly describe the content of each dataset according to the five key aspects described above. For aspect 3 (quality), perform two smell tests per dataset.
 
 ### df_ilo
+
 1. **Definitions**. `obs_value` is the labour force participation rate, the share of women aged 45 to 54 who are either employed or looking for work. `ref_area` is the country code and `time` is the year.
 
 2. **Units**. obs_value is in percent, and time is in calendar years.
