@@ -149,7 +149,7 @@ range(flfp_raw$time)                # first and last year
 n_distinct(flfp_raw$ref_area)       # number of countries and regions
 ```
 
-The filters worked: the data only contain women aged 45 to 54. The series covers `r min(flfp_raw$time)` to `r max(flfp_raw$time)` for `r n_distinct(flfp_raw$ref_area)` countries. Please note that We keep the raw data here and that the cleaning (selecting variables, handling missing values, removing regional aggregates) is done in Part 3.
+The filters worked: the data only contain women aged 45 to 54. The series covers `r min(flfp_raw$time)` to `r max(flfp_raw$time)` for `r n_distinct(flfp_raw$ref_area)` countries. Please note that we keep the raw data here and that the cleaning (selecting variables, handling missing values, removing regional aggregates) is done in Part 3.
 
 ## 1.2 - GDP per capita (World Bank)
 
