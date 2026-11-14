@@ -451,10 +451,8 @@ comparison_all |> count(difference = round(difference, 3))
 # Keep only the rows that are not identical :
 # - a difference larger than 0.0011
 # - or a missing value (the row exists in only one of the two sources)
-# Why 0.0011 : the values are published with 3 decimals, and Rilostat (ILO bulk files) and our
-# function (ILO SDMX API) round the same underlying value separately. Many rows therefore differ systematically by exactly 0.001 (e.g. 51.807 vs 51.808), which is a rounding gap, not a real difference.
-# We use 0.0011 instead of 0.001 because the computer stores decimals with tiny errors
-# (a gap of "0.001" can be stored as 0.0010000001 and would otherwise be counted as larger than 0.001)
+
+# Why 0.0011 : the values are published with 3 decimals, and Rilostat (ILO bulk files) and our function (ILO SDMX API) round the same underlying value separately. Many rows therefore differ systematically by exactly 0.001 (e.g. 51.807 vs 51.808), which is a rounding gap, not a real difference. We use 0.0011 instead of 0.001 because the computer stores decimals with tiny errors (a gap of "0.001" can be stored as 0.0010000001 and would otherwise be counted as larger than 0.001)
 different <- comparison_all |>
   filter(is.na(difference) | abs(difference) > 0.0011)
 
@@ -484,8 +482,7 @@ get_wbdata <- function(indicator = "NY.GDP.PCAP.KD", country = "all", year_from 
 # Empty list to collect one data frame per country
   results <- list()
 
-# Loop : repeat the request for each country of the vector
-# with the default "all" the loop runs once and returns all countries and regions
+# Loop : repeat the request for each country of the vector with the default "all" the loop runs once and returns all countries and regions
   for (cty in country) {
 
 # Build the URL : base URL + country + indicator (path parameters) + query parameters
@@ -498,17 +495,15 @@ get_wbdata <- function(indicator = "NY.GDP.PCAP.KD", country = "all", year_from 
                         "&date=", year_from, ":", year_to,
                         "&per_page=20000")
 
-# API call
-# Create the request (nothing is sent yet)
+# API call Create the request (nothing is sent yet)
     req <- request(final_url)
 
-# httr2 stops by itself when the server answers with an error : we switch that off
-# so that the answer always comes back and our own check below gives a clear error message
+# httr2 stops by itself when the server answers with an error : we switch that off so that the answer always comes back and our own check below gives a clear error message
     req <- req_error(req, is_error = function(resp) FALSE)
 
 # In case of issues with the server, we retry the request (and we pause at the end of each loop)
 # If the server refuses temporarily (403) or is busy (429, 503), wait and try again (max 4 times)
-# backoff : wait 5 seconds, then 10, then 15 before the next attempt
+# Slowing process : wait 5 seconds, then 10, then 15 before the next attempt
     req <- req_retry(req, max_tries = 4,
                      is_transient = function(resp) resp_status(resp) %in% c(403, 429, 503),
                      backoff = function(i) 5 * i)
@@ -640,10 +635,8 @@ comparison_wb_all <- inner_join(wb_pkg_all, wb_api_all, by = c("iso2c", "year"))
 # Keep only the rows that are not identical :
 # - a value that is missing (NA) in one source but not in the other
 # - or a real difference between the two values
-# Unlike the ILO data, the World Bank data has many NA values (one row for every year),
-# so two NA values count as identical here.
-# Both sources query the same World Bank API, so we expect no rounding gap :
-# 0.000001 only ignores the tiny errors with which the computer stores decimals
+# Unlike the ILO data, the World Bank data has many NA values (one row for every year), so two NA values count as identical here.
+# Both sources query the same World Bank API, so we expect no rounding gap : 0.000001 only ignores the tiny errors with which the computer stores decimals
 different_wb <- comparison_wb_all |>
   filter(is.na(value_api) != is.na(value_pkg) |
            (!is.na(difference) & abs(difference) > 0.000001))
@@ -730,8 +723,7 @@ range(df_ilo$obs_value)
 # Smell test 1: using regions, we count the areas that are groups of countries, not countries
 n_groups_wb <- df_wb |>
   distinct(country, region) |>
-  filter(is.na(region) | region == "Aggregates") |>
-  nrow()
+  filter(is.na(region) | region == "Aggregates") |> nrow()
 
 n_groups_wb
 
@@ -790,8 +782,7 @@ sum(df_wb$iso3c == "ANT")
 # Manual decision, after reading the list above : ANT (Netherlands Antilles) no longer exists
 codes_to_drop <- c("ANT")
 
-df_ilo_clean <- df_ilo |>
-  filter(!ref_area %in% codes_to_drop)
+df_ilo_clean <- df_ilo |> filter(!ref_area %in% codes_to_drop)
 
 # The render stops if a dropped code is still in the data
 stopifnot(!any(codes_to_drop %in% df_ilo_clean$ref_area))
@@ -809,8 +800,7 @@ nrow(df_ilo) - nrow(df_ilo_clean)
 stopifnot(nrow(dup_ilo) == 0)
 
 # Remove the source column (no duplicates to explain)
-df_ilo_clean <- df_ilo_clean |>
-  select(-source)
+df_ilo_clean <- df_ilo_clean |> select(-source)
 ```
 
 We must then look at the `indicator`, `sex` and `classif1` categories to see whether they represent only one value (for `sex` it must be female and for `classif1` it must be women between the age of 45 and 54).
@@ -831,30 +821,27 @@ Each has one value: women, aged 45 to 54. Therefore, these columns are no longer
 
 ```{r}
 # Remove the columns with only one value
-df_ilo_clean <- df_ilo_clean |>
-  select(-indicator, -sex, -classif1)
+df_ilo_clean <- df_ilo_clean |> select(-indicator, -sex, -classif1)
 ```
 
 We now take a look at the metadata columns `obs_status`, `note_classif`, `note_indicator` and `note_source`. These are codes we cannot interpret and are not needed for the analysis, and three of them are almost entirely empty. Hence we can delete them too.
 
 ```{r}
 # Remove the metadata columns (codes and notes not needed for the analysis)
-df_ilo_clean <- df_ilo_clean |>
-  select(-obs_status, -note_classif, -note_indicator, -note_source)
+df_ilo_clean <- df_ilo_clean |> select(-obs_status, -note_classif, -note_indicator, -note_source)
 ```
 
 We check that the columns were deleted accurately and comment on `time` and `obs_value`.
 
 ```{r}
 # Only our three variables are left, without missing values (the render stops otherwise)
-stopifnot(setequal(names(df_ilo_clean), c("ref_area", "time", "obs_value")),
-          !anyNA(df_ilo_clean))
+stopifnot(setequal(names(df_ilo_clean), c("ref_area", "time", "obs_value")), !anyNA(df_ilo_clean))
 
 # Check of the remaining columns : type, missing values and distribution
 skim(df_ilo_clean)
 ```
 
-We can see that `n_missing` is zero for both columns, which indicates there are no NA values (as already seen for `obs_value` in 3.1.2). `time` is numeric (years) with a minimum of `r min(df_ilo_clean$time)` and a maximum of `r max(df_ilo_clean$time)`. The mean of `time` is nearer to `r max(df_ilo_clean$time)` than `r min(df_ilo_clean$time)` because there are more datapoints, and hence more rows with a value, the closer we get to today.
+We can see that `n_missing` is zero for both columns, which indicates there are no NA values (as already seen for `obs_value` in 3.1.2). `time` is numeric (years) with a minimum of `r min(df_ilo_clean$time)` and a maximum of `r max(df_ilo_clean$time)`. The mean of `time` is nearer to `r max(df_ilo_clean$time)` than `r min(df_ilo_clean$time)` because there are more data points, and hence more rows with a value, the closer we get to today.
 
 ```{r}
 # Summary of our variable of interest : the participation rate
@@ -904,9 +891,7 @@ We keep `iso3c` and delete `iso2c`, because `iso3c` is the 3-letter code that is
 
 ```{r}
 # Remove the columns not needed for the analysis
-df_wb_clean <- df_wb_clean |>
-  select(-iso2c, -status, -lastupdated, -region,
-         -capital, -longitude, -latitude, -lending)
+df_wb_clean <- df_wb_clean |> select(-iso2c, -status, -lastupdated, -region, -capital, -longitude, -latitude, -lending)
 
 # Only the variables we need are left (the render stops otherwise)
 stopifnot(setequal(names(df_wb_clean), c("country", "iso3c", "year", "gdp_pc", "income")))
