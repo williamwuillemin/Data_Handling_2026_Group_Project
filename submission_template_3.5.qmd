@@ -1006,39 +1006,431 @@ saveRDS(df_wb_clean,  "data/df_wb_clean.RDS")
 
 ### 3.3.1 - Which variable(s) will you use to perform the merge?
 
+We merge on two keys together: the country code (`ref_area` in the ILO data, `iso3c` in the World Bank data) and the year (`time`, `year`). The unit of observation is the country-year in both, so the merge is one-to-one; the code alone would match every year with every year (many-to-many). We use codes because the sources spell names differently.
+
 ### 3.3.2 - Are there any additional cleaning steps required before merging the datasets, if any?
+
+Yes: the keys need the same names, types and values, and must be unique.
+
+```{r}
+# Type of the year column in each dataset
+class(df_ilo_clean$time)
+class(df_wb_clean$year)
+
+# Same key names and types : rename the ILO columns, year as integer
+df_ilo_merge <- df_ilo_clean |>
+  select(iso3c = ref_area, year = time, flfp = obs_value) |>
+  mutate(year = as.integer(year))
+
+# Keep only the keys and GDP (name and income group are added after the merge)
+df_wb_merge <- df_wb_clean |>
+  select(iso3c, year, gdp_pc, log_gdp_pc)
+
+# Check : duplicated country-years in each dataset (0 = none)
+df_ilo_merge |>
+  count(iso3c, year) |>
+  filter(n > 1) |>
+  nrow()
+df_wb_merge |>
+  count(iso3c, year) |>
+  filter(n > 1) |>
+  nrow()
+```
+
+`time` is `r class(df_ilo_clean$time)` and `year` `r class(df_wb_clean$year)`: we rename the ILO keys and make years integers. No key is duplicated.
+
+```{r}
+# Names for the codes that countrycode does not know
+custom_names <- c(KOS = "Kosovo", XKX = "Kosovo", CHI = "Channel Islands")
+
+# ILO codes without a match in the World Bank data
+df_ilo_merge |>
+  distinct(iso3c) |>
+  anti_join(distinct(df_wb_merge, iso3c), by = "iso3c") |>
+  mutate(name = countrycode(iso3c, "iso3c", "country.name",
+                            custom_match = custom_names))
+
+# World Bank codes without a match in the ILO data
+df_wb_merge |>
+  distinct(iso3c) |>
+  anti_join(distinct(df_ilo_merge, iso3c), by = "iso3c") |>
+  mutate(name = countrycode(iso3c, "iso3c", "country.name",
+                            custom_match = custom_names))
+```
+
+Kosovo has two codes (KOS, XKX), so we recode the ILO one.
+
+```{r}
+# Recode Kosovo to the World Bank code
+df_ilo_merge <- df_ilo_merge |>
+  mutate(iso3c = if_else(iso3c == "KOS", "XKX", iso3c))
+
+# Check : codes still without a match in each direction
+ilo_only <- df_ilo_merge |>
+  distinct(iso3c) |>
+  anti_join(distinct(df_wb_merge, iso3c), by = "iso3c")
+wb_only <- df_wb_merge |>
+  distinct(iso3c) |>
+  anti_join(distinct(df_ilo_merge, iso3c), by = "iso3c")
+
+nrow(ilo_only)
+nrow(wb_only)
+```
+
+Now only `r nrow(ilo_only)` ILO and `r nrow(wb_only)` World Bank codes are unmatched. Periods: ILO `r min(df_ilo_merge$year)`–`r max(df_ilo_merge$year)`, World Bank `r min(df_wb_merge$year)`–`r max(df_wb_merge$year)`.
 
 ### 3.3.3 - What type of merge is appropriate (e.g., right join, left join, full join, etc.) in this case?
 
+```{r}
+# The four joins on the same keys : rows, countries, rows with both values
+df_joins <- bind_rows(
+  inner = inner_join(df_ilo_merge, df_wb_merge, by = c("iso3c", "year")),
+  left  = left_join(df_ilo_merge, df_wb_merge, by = c("iso3c", "year")),
+  right = right_join(df_ilo_merge, df_wb_merge, by = c("iso3c", "year")),
+  full  = full_join(df_ilo_merge, df_wb_merge, by = c("iso3c", "year")),
+  .id = "join"
+) |>
+  group_by(join) |>
+  summarise(rows      = n(),
+            countries = n_distinct(iso3c),
+            both      = sum(!is.na(flfp) & !is.na(gdp_pc)))
+
+knitr::kable(df_joins, col.names = c("Join (x = ILO, y = World Bank)", "Rows",
+                                     "Countries", "Rows with both values"))
+
+# Master panel : full join
+df_merged <- full_join(df_ilo_merge, df_wb_merge, by = c("iso3c", "year"))
+```
+
+We use a full join: 3.4.1 needs participation alone, 3.4.2 GDP alone and 3.5 both, and only the full join keeps all `r df_joins$countries[df_joins$join == "full"]` countries. An inner join would drop `r nrow(df_ilo_merge) - df_joins$rows[df_joins$join == "inner"]` participation rows, including all `r sum(df_ilo_merge$year < min(df_wb_merge$year))` before `r min(df_wb_merge$year)`. A left join on the ILO data would drop `r fmt(nrow(df_wb_merge) - df_joins$rows[df_joins$join == "inner"])` GDP rows and bias the GDP trends.
+
 ### 3.3.4 - What are the implications of your choice of merging method for your analysis?
+
+```{r}
+# Countries with both values in the years compared in 3.5.3
+df_merged |>
+  filter(!is.na(flfp), !is.na(gdp_pc), year %in% c(1970, 1990, 2010, 2020)) |>
+  count(year)
+```
+
+The full join turns the rows missing from one source into explicit `NA`s: `df_merged` has `r fmt(nrow(df_merged))` rows for `r n_distinct(df_merged$iso3c)` countries, but only `r fmt(df_joins$both[df_joins$join == "full"])` rows for `r df_joins$countries[df_joins$join == "inner"]` countries have both values. Participation trends, GDP trends and the U-shape therefore use different samples, and the `r nrow(ilo_only)` ILO-only areas, mostly territories, never enter the U-shape. The panel is also unbalanced: the number of countries with both values rises from `r sum(df_merged$year == 1970 & !is.na(df_merged$flfp) & !is.na(df_merged$gdp_pc))` in 1970 to `r sum(df_merged$year == 2010 & !is.na(df_merged$flfp) & !is.na(df_merged$gdp_pc))` in 2010, so a change in an average can reflect which countries enter the data rather than change within countries.
 
 ### 3.3.5 - Are there any steps necessary in cleaning data after the merge? Pay attention to the missing values (if any) and explain how you deal with them.
 
-```{r}
+Yes: we check the rows, make names and income groups consistent and handle the missing values.
 
+```{r}
+# Check : rows after the merge = ILO rows + World Bank rows - rows in both
+nrow(df_merged)
+nrow(df_ilo_merge) + nrow(df_wb_merge) - df_joins$rows[df_joins$join == "inner"]
+
+# Check : still one row per country-year (0 = no duplicates)
+df_merged |>
+  count(iso3c, year) |>
+  filter(n > 1) |>
+  nrow()
+
+# One income group per country (current World Bank group, the same every year)
+df_income <- df_wb_clean |>
+  distinct(iso3c, income)
+
+# Check : number of countries with more than one group, and the groups used
+df_income |>
+  count(iso3c) |>
+  filter(n > 1) |>
+  nrow()
+count(df_income, income)
+
+# Name of every code from one source, income group as a factor in order
+df_merged <- df_merged |>
+  left_join(df_income, by = "iso3c") |>
+  mutate(country = countrycode(iso3c, "iso3c", "country.name",
+                               custom_match = custom_names),
+         income  = factor(income, levels = c("Low income",
+                                             "Lower middle income",
+                                             "Upper middle income",
+                                             "High income")))
+
+# Check : rows unchanged, no missing name, no hidden missing value ("" or -99)
+nrow(df_merged)
+sum(is.na(df_merged$country))
+sum(df_merged == "", na.rm = TRUE)
+sum(df_merged == -99, na.rm = TRUE)
 ```
 
+The row count matches, the key stays unique, names are complete and nothing is hidden as "" or -99. Each country has one current income group (four levels), used for every year; it is `NA` for the `r n_distinct(df_merged$iso3c[is.na(df_merged$income)])` areas without World Bank GDP.
+
+```{r}
+# Missing values per variable
+colSums(is.na(df_merged))
+
+# Rows with participation, GDP and both, by decade and by income group
+df_merged |>
+  mutate(decade = year %/% 10 * 10) |>
+  group_by(decade) |>
+  summarise(rows      = n(),
+            with_flfp = sum(!is.na(flfp)),
+            with_gdp  = sum(!is.na(gdp_pc)),
+            both      = sum(!is.na(flfp) & !is.na(gdp_pc)))
+df_merged |>
+  group_by(income) |>
+  summarise(countries = n_distinct(iso3c),
+            rows      = n(),
+            both      = sum(!is.na(flfp) & !is.na(gdp_pc)))
+
+# Final order of columns and rows
+df_merged <- df_merged |>
+  select(iso3c, country, year, income, flfp, gdp_pc, log_gdp_pc) |>
+  arrange(iso3c, year)
+
+# Country-years with both values, for the U-shape in 3.5
+df_both <- df_merged |>
+  filter(!is.na(flfp), !is.na(gdp_pc))
+
+# Overview of the final data
+glimpse(df_merged)
+
+# Save the merged data (R format)
+saveRDS(df_merged, "data/df_merged.RDS")
+```
+
+`flfp` is missing in `r fmt(sum(is.na(df_merged$flfp)))` rows without an ILO estimate, `gdp_pc` in `r sum(is.na(df_merged$gdp_pc))` ILO rows without World Bank GDP (e.g. before `r min(df_wb_merge$year)`, territories). Complete rows are rarer in early decades and poorer countries, which suggests values are not missing completely at random: samples lean towards recent, richer country-years. We keep the `NA`s and do not impute, which would invent whole decades; each analysis uses and reports its complete cases. `df_merged` now has its seven final columns, and `df_both` `r fmt(nrow(df_both))` rows.
+
 ## 3.4 - Explore and visualize the data
+
+As seen in 3.3.4, the countries in the data change over time, so a trend can reflect which countries enter the data. We therefore compare each trend with a balanced panel: the countries observed in every year of one common window.
+
+```{r}
+# Number of countries with a participation rate and with GDP, per year
+coverage <- df_merged |>
+  group_by(year) |>
+  summarise(n_flfp = sum(!is.na(flfp)),
+            n_gdp  = sum(!is.na(gdp_pc)))
+
+# Common window for both variables (chosen from the coverage above)
+year_start <- 2000
+year_end   <- 2022
+
+# Countries with a participation rate in every year of the window
+balanced_flfp <- df_merged |>
+  filter(!is.na(flfp), year >= year_start, year <= year_end) |>
+  count(iso3c) |>
+  filter(n == year_end - year_start + 1)
+
+# Countries with GDP per capita in every year of the window
+balanced_gdp <- df_merged |>
+  filter(!is.na(gdp_pc), year >= year_start, year <= year_end) |>
+  count(iso3c) |>
+  filter(n == year_end - year_start + 1)
+
+# For comparison : balanced participation panel starting ten years earlier
+balanced_flfp_early <- df_merged |>
+  filter(!is.na(flfp), year >= year_start - 10, year <= year_end) |>
+  count(iso3c) |>
+  filter(n == year_end - year_start + 11)
+
+# Number of countries in each panel
+nrow(balanced_flfp)
+nrow(balanced_gdp)
+nrow(balanced_flfp_early)
+
+# Income groups in the balanced participation panel
+balanced_flfp_income <- df_merged |>
+  filter(iso3c %in% balanced_flfp$iso3c, year == year_end) |>
+  count(income)
+
+balanced_flfp_income
+```
+
+We use `r year_start`–`r year_end`. Participation is sparse: a balanced panel starting ten years earlier would keep only `r nrow(balanced_flfp_early)` countries, and GDP coverage falls after `r year_end` (`r coverage$n_gdp[coverage$year == max(coverage$year)]` countries in `r max(coverage$year)` against `r coverage$n_gdp[coverage$year == year_end]`). The panels keep `r nrow(balanced_flfp)` countries for participation, `r balanced_flfp_income$n[balanced_flfp_income$income %in% "High income"]` of them high income, and `r nrow(balanced_gdp)` for GDP.
 
 ### 3.4.1 - Trends in female labour force participation
 
 #### 3.4.1.1 - How did female labour force participation evolve over time? Interpret the trend exactly. What should we be aware of/careful when interpreting the trend?
 
+```{r}
+# Median participation per year : all countries and balanced panel
+flfp_by_year <- bind_rows(
+  "All countries" = df_merged |>
+    filter(!is.na(flfp), year >= year_start, year <= year_end),
+  "Balanced panel" = df_merged |>
+    filter(!is.na(flfp), year >= year_start, year <= year_end,
+           iso3c %in% balanced_flfp$iso3c),
+  .id = "sample"
+) |>
+  group_by(sample, year) |>
+  summarise(countries   = n(),
+            median_flfp = median(flfp),
+            .groups = "drop")
+
+# Each line separately (used in the text)
+flfp_all      <- flfp_by_year |> filter(sample == "All countries")
+flfp_balanced <- flfp_by_year |> filter(sample == "Balanced panel")
+
+ggplot(flfp_by_year, aes(x = year, y = median_flfp, color = sample)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Labour force participation of women aged 45-54",
+       subtitle = paste("Median across countries. Balanced panel: the",
+                        nrow(balanced_flfp), "countries observed every year"),
+       x = "Year", y = "Participation rate (%)", color = "Sample",
+       caption = "Source: ILOSTAT") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+Participation rose steadily: in the balanced panel, the median went from `r round(flfp_balanced$median_flfp[1], 1)` % in `r year_start` to `r round(flfp_balanced$median_flfp[nrow(flfp_balanced)], 1)` % in `r year_end` (+`r round(flfp_balanced$median_flfp[nrow(flfp_balanced)] - flfp_balanced$median_flfp[1], 1)` percentage points), with only a small dip in 2020. We use the median because participation is left-skewed (3.2), and each country counts once, whatever its size. The all-countries line is lower and noisier (+`r round(flfp_all$median_flfp[nrow(flfp_all)] - flfp_all$median_flfp[1], 1)` points), because the `r min(flfp_all$countries)` to `r max(flfp_all$countries)` reporting countries change every year. The balanced panel is mostly high income, so its trend describes rich countries.
+
 #### 3.4.1.2 - Is this trend similar for all countries? What is your hypothesis? Confirm or reject your hypothesis using your data.
 
-```{r}
+Following Goldin, we expect participation to rise most in high-income countries and stagnate or fall in low-income countries, where it is already high (family farms). As the balanced panel has no low-income country, we compare country averages over the window's first and last ten years.
 
+```{r}
+# Average participation of each country in the first and last ten years
+flfp_periods <- df_merged |>
+  filter(!is.na(flfp), !is.na(income)) |>
+  mutate(period = case_when(
+    year >= year_start & year <= year_start + 9 ~ "first",
+    year >= year_end - 9 & year <= year_end ~ "last"
+  )) |>
+  filter(!is.na(period)) |>
+  group_by(iso3c, income, period) |>
+  summarise(flfp = mean(flfp), .groups = "drop") |>
+  pivot_wider(names_from = period, values_from = flfp) |>
+  filter(!is.na(first), !is.na(last))
+
+# Median per income group (the change is computed country by country)
+flfp_by_income <- flfp_periods |>
+  group_by(income) |>
+  summarise(countries    = n(),
+            change       = median(last - first),
+            median_first = median(first),
+            median_last  = median(last))
+
+# One point per period, placed at the middle year of the period
+flfp_by_income |>
+  pivot_longer(c(median_first, median_last),
+               names_to = "period", values_to = "median_flfp") |>
+  mutate(year = if_else(period == "median_first",
+                        year_start + 4.5, year_end - 4.5)) |>
+  ggplot(aes(x = year, y = median_flfp, color = income)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Participation of women aged 45-54 by World Bank income group",
+       subtitle = paste("Median of country averages over ", year_start, "-",
+                        year_start + 9, " and ", year_end - 9, "-", year_end,
+                        " (same ", nrow(flfp_periods), " countries)", sep = ""),
+       x = "Middle year of the ten-year period",
+       y = "Participation rate (%)",
+       color = NULL, caption = "Source: ILOSTAT") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
 ```
+
+The data confirm the hypothesis: the median change rises with income, from `r round(flfp_by_income$change[1], 1)` points in low-income countries, which start highest (`r round(flfp_by_income$median_first[1], 1)` %), to +`r round(flfp_by_income$change[2], 1)`, +`r round(flfp_by_income$change[3], 1)` and +`r round(flfp_by_income$change[4], 1)` points in lower-middle, upper-middle and high-income countries. Groups are today's classification; the `r n_distinct(df_merged$iso3c[!is.na(df_merged$flfp) & is.na(df_merged$income) & df_merged$year >= year_start])` areas without one are excluded.
 
 ### 3.4.2 - Trends in GDP per capita
 
 #### 3.4.2.1 - How did GDP per capita evolve over time? What should we be aware of/careful when interpreting the trend?
 
+```{r}
+# Median GDP per capita per year : all countries and balanced panel
+gdp_by_year <- bind_rows(
+  "All countries" = df_merged |>
+    filter(!is.na(gdp_pc), year >= year_start, year <= year_end),
+  "Balanced panel" = df_merged |>
+    filter(!is.na(gdp_pc), year >= year_start, year <= year_end,
+           iso3c %in% balanced_gdp$iso3c),
+  .id = "sample"
+) |>
+  group_by(sample, year) |>
+  summarise(countries  = n(),
+            median_gdp = median(gdp_pc),
+            .groups = "drop")
+
+# Each line separately (used in the text)
+gdp_all      <- gdp_by_year |> filter(sample == "All countries")
+gdp_balanced <- gdp_by_year |> filter(sample == "Balanced panel")
+
+ggplot(gdp_by_year, aes(x = year, y = median_gdp, color = sample)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "GDP per capita",
+       subtitle = paste("Median across countries. Balanced panel: the",
+                        nrow(balanced_gdp), "countries observed every year"),
+       x = "Year", y = "GDP per capita (constant 2015 US$)", color = "Sample",
+       caption = "Source: World Bank WDI") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+GDP per capita grew steadily: in the balanced panel, the median rose from `r fmt(round(gdp_balanced$median_gdp[1]))` US\$ in `r year_start` to `r fmt(round(gdp_balanced$median_gdp[nrow(gdp_balanced)]))` US\$ in `r year_end` (+`r round(100 * (gdp_balanced$median_gdp[nrow(gdp_balanced)] / gdp_balanced$median_gdp[1] - 1))` %), with a fall of `r round(100 * (1 - gdp_balanced$median_gdp[gdp_balanced$year == 2020] / gdp_balanced$median_gdp[gdp_balanced$year == 2019]), 1)` % in 2020. The all-countries line, with up to `r max(gdp_all$countries) - nrow(balanced_gdp)` more countries, ends `r fmt(round(gdp_all$median_gdp[nrow(gdp_all)] - gdp_balanced$median_gdp[nrow(gdp_balanced)]))` US\$ higher, so composition matters little. We use the unweighted median because GDP is right-skewed (3.2). Constant 2015 US\$ remove inflation but not price differences between countries (not PPP), and an average says nothing about inequality within a country.
+
 #### 3.4.2.2 - Is this trend similar for rich and poor countries? Did the gap between them grow or shrink over time?
 
 ```{r}
+# Median log GDP per capita per year and income group : balanced panel
+gdp_by_income <- df_merged |>
+  filter(iso3c %in% balanced_gdp$iso3c, year >= year_start, year <= year_end) |>
+  group_by(income, year) |>
+  summarise(median_log_gdp = median(log_gdp_pc), .groups = "drop")
 
+ggplot(gdp_by_income, aes(x = year, y = median_log_gdp, color = income)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "GDP per capita by World Bank income group",
+       subtitle = paste("Median across the", nrow(balanced_gdp),
+                        "countries of the balanced panel"),
+       x = "Year", y = "Log of GDP per capita (constant 2015 US$)",
+       color = NULL, caption = "Source: World Bank WDI") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
 ```
+
+```{r}
+# Robustness : rich and poor defined by GDP in year_start (top/bottom quarter)
+gdp_start <- df_merged |>
+  filter(iso3c %in% balanced_gdp$iso3c, year == year_start)
+quarters <- quantile(gdp_start$gdp_pc, c(0.25, 0.75))
+
+groups_start <- gdp_start |>
+  mutate(rich_poor = case_when(gdp_pc <= quarters[1] ~ "poor",
+                               gdp_pc >= quarters[2] ~ "rich")) |>
+  filter(!is.na(rich_poor)) |>
+  select(iso3c, rich_poor)
+
+# Median GDP of the rich and poor groups, gap in US$ and ratio
+gdp_gap <- bind_rows(
+  "Income group (World Bank, today)" = df_merged |>
+    filter(iso3c %in% balanced_gdp$iso3c,
+           income %in% c("Low income", "High income")) |>
+    mutate(rich_poor = if_else(income == "High income", "rich", "poor")),
+  "Quarter of GDP in first year" = df_merged |>
+    inner_join(groups_start, by = "iso3c"),
+  .id = "definition"
+) |>
+  filter(year %in% c(year_start, year_end)) |>
+  group_by(definition, year, rich_poor) |>
+  summarise(median_gdp = median(gdp_pc), .groups = "drop") |>
+  pivot_wider(names_from = rich_poor, values_from = median_gdp) |>
+  mutate(difference = rich - poor,
+         ratio      = rich / poor)
+
+# Each definition separately, first year then last year (used in the text)
+gap_wb       <- gdp_gap |> filter(definition != "Quarter of GDP in first year")
+gap_quarters <- gdp_gap |> filter(definition == "Quarter of GDP in first year")
+
+gdp_gap |>
+  mutate(poor       = fmt(round(poor)),
+         rich       = fmt(round(rich)),
+         difference = fmt(round(difference)),
+         ratio      = round(ratio, 1)) |>
+  knitr::kable(col.names = c("Rich and poor defined by", "Year",
+                             "Poor (US\\$)", "Rich (US\\$)",
+                             "Difference (US\\$)", "Ratio rich / poor"))
+```
+
+The trend is similar in direction but not in speed: all groups grew, the poorest fastest (+`r round(100 * (gap_wb$poor[2] / gap_wb$poor[1] - 1))` % for the median low-income country against +`r round(100 * (gap_wb$rich[2] / gap_wb$rich[1] - 1))` % for high income). On a log axis the vertical distance between two lines is a ratio, so the narrowing distance between the low- and high-income lines means a shrinking relative gap. The ratio fell from `r format(round(gap_wb$ratio[1], 1), nsmall = 1)` to `r format(round(gap_wb$ratio[2], 1), nsmall = 1)`, but the absolute gap grew from `r fmt(round(gap_wb$difference[1]))` to `r fmt(round(gap_wb$difference[2]))` US\$, since a faster growth rate on a much lower income adds fewer dollars. Today's groups partly sort countries by later growth, so we also define rich and poor as the top and bottom quarter of GDP in `r year_start` (`r sum(groups_start$rich_poor == "rich")` countries each): the ratio still falls, from `r format(round(gap_quarters$ratio[1], 1), nsmall = 1)` to `r format(round(gap_quarters$ratio[2], 1), nsmall = 1)`. These are unweighted medians on a balanced panel, so composition does not drive the result.
 
 ## 3.5 - Goldin's U-Shape theory
 
